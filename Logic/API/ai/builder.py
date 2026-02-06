@@ -1,5 +1,6 @@
 from Resources.Constants import endpoints, headers
 from Utils.utils import load_test_data
+from Utils.logger import FrameworkLogger as log
 
 
 class AIAgentBuilder:
@@ -27,7 +28,7 @@ class AIAgentBuilder:
                 else load_test_data("LocalModel")
             )
 
-            print(f"Making AI Agent request with scenario: {scenario}")
+            log.safe_print(f"Making AI Agent request with scenario: {scenario}")
             # print(f"Using test data: {test_data_to_use}")
 
             # Extract payload from test data structure
@@ -35,7 +36,7 @@ class AIAgentBuilder:
             try:
                 payload = test_data_to_use[scenario]["input"]["body"]
             except KeyError:
-                print(f"Scenario {scenario} not found in test data")
+                log.safe_print(f"Scenario {scenario} not found in test data")
                 return None
 
             # Make the API call
@@ -51,7 +52,9 @@ class AIAgentBuilder:
             )
 
             if response:
-                print(f"AI Agent response received with status: {response.status_code}")
+                log.safe_print(
+                    f"AI Agent response received with status: {response.status_code}"
+                )
             return response
 
         elif agent_type == "GITLAB_DUO":
@@ -63,12 +66,12 @@ class AIAgentBuilder:
                 else load_test_data("GitlabDuo")
             )
 
-            print(f"Making AI Agent request with scenario: {scenario}")
+            log.safe_print(f"Making AI Agent request with scenario: {scenario}")
 
             try:
                 payload = test_data_to_use[scenario]["input"]["body"]
             except KeyError:
-                print(f"Scenario {scenario} not found in test data")
+                log.safe_print(f"Scenario {scenario} not found in test data")
                 return None
 
             response = self.api_wrapper.post_request_wrapper(
@@ -77,9 +80,11 @@ class AIAgentBuilder:
                 headers=headers.GITLAB_DUO_HEADERS,
                 request_body=payload,
             )
-            print(f"Response IS __________________________ {response}")
+            log.safe_print(f"Response IS __________________________ {response}")
             if response:
-                print(f"AI Agent response received with status: {response.status_code}")
+                log.safe_print(
+                    f"AI Agent response received with status: {response.status_code}"
+                )
             return response
 
         return None

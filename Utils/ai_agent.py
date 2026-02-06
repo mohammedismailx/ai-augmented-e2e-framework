@@ -4,12 +4,16 @@ import builtins
 import requests
 from Resources.Constants import endpoints, headers
 from Utils.utils import load_test_data
+from Utils.logger import FrameworkLogger as log
 from Logic.API.ai.builder import AIAgentBuilder
 from Resources.prompts import (
     get_self_healing_prompt,
     get_db_context_prompt,
     get_response_body_validation_prompt,
     get_logs_analyzing_prompt,
+    get_curl_generation_prompt,
+    get_api_response_analysis_prompt,
+    get_curl_retry_prompt,
 )
 from Libs.IntentLocatorLibrary import IntentLocatorLibrary
 from Libs.IntentQueriesLibrary import IntentQueriesLibrary
@@ -65,6 +69,13 @@ class AIAgent:
             )
         elif context == "LOGS_ANALYZING":
             return self.execute_logs_analyzing_context(kwargs.get("logs"))
+        elif context == "SWAGGER_INTENT":
+            return self.execute_swagger_intent_context(
+                kwargs.get("intent"),
+                kwargs.get("swagger_context"),
+                kwargs.get("base_url"),
+                kwargs.get("return_prompt", False),
+            )
         return None
 
     def execute_self_healing_context(
@@ -105,7 +116,7 @@ class AIAgent:
         if not db_connector:
             db_connector = DBConnector()
 
-        print(
+        log.safe_print(
             f"DEBUG: Fetching schema information for 'testdb' using provided connector..."
         )
         schema_data = db_connector.execute_query(schema_query)
@@ -125,7 +136,7 @@ class AIAgent:
 
                 schema_md += f"| {row['COLUMN_NAME']} | {row['COLUMN_TYPE']} | {row['IS_NULLABLE']} | {row['COLUMN_KEY']} | {row['EXTRA']} | {row['COLUMN_DEFAULT']} |\n"
         else:
-            schema_md += "⚠️ No schema data found or connection failed."
+            schema_md += "[WARNING] No schema data found or connection failed."
 
         # 3. Save to schemaAnalysis.md
         schema_path = os.path.join(
@@ -134,7 +145,7 @@ class AIAgent:
         os.makedirs(os.path.dirname(schema_path), exist_ok=True)
         with open(schema_path, "w", encoding="utf-8") as f:
             f.write(schema_md)
-        print(f"✓ Schema analysis updated in {schema_path}")
+        log.safe_print(f"✓ Schema analysis updated in {schema_path}")
 
         # 4. Proceed with AI analysis
         self._initialize_conversation("You are an expert in MySQL...")
@@ -165,6 +176,128 @@ class AIAgent:
         goal = get_logs_analyzing_prompt(logs)
         return self._prompt_agent(goal, file_name="file.log")
 
+    def execute_swagger_intent_context(
+        self,
+        intent: str,
+        swagger_context: str,
+        base_url: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate a curl command based on user intent and swagger context.
+
+        Args:
+            intent (str): User's natural language intent (e.g., "delete book with id 5")
+            swagger_context (str): Retrieved swagger API documentation from RAG
+            base_url (str): Base URL for the API
+            return_prompt (bool): If True, returns tuple (response, prompt)
+
+        Returns:
+            str or tuple: Generated curl command, or (curl_command, prompt) if return_prompt=True
+        """
+        self._initialize_conversation(
+            "You are an expert in REST API integration, curl command generation, and API request construction."
+        )
+
+        goal = get_curl_generation_prompt(intent, swagger_context, base_url)
+
+        curl_command = self._prompt_agent(
+            goal,
+            file_name="curl_command.sh",
+            constraints="Generate executable curl command",
+            backstory="You are an expert in REST API integration and curl command generation.",
+        )
+
+        if return_prompt:
+            return curl_command, goal
+        return curl_command
+
+    def analyze_api_response(
+        self,
+        intent: str,
+        curl_command: str,
+        response_body: str,
+        status_code: int,
+        stderr: str = "",
+        return_prompt: bool = False,
+    ):
+        """
+        Analyze API response using GitLab Duo.
+
+        Args:
+            intent (str): Original user intent
+            curl_command (str): The curl command that was executed
+            response_body (str): The response body from the API
+            status_code (int): HTTP status code
+            stderr (str): Any error output from curl execution
+            return_prompt (bool): If True, returns tuple (response, prompt)
+
+        Returns:
+            str or tuple: Analysis result, or (analysis, prompt) if return_prompt=True
+        """
+        self._initialize_conversation(
+            "You are an expert in REST API response analysis, HTTP status interpretation, and test result evaluation."
+        )
+
+        goal = get_api_response_analysis_prompt(
+            intent, curl_command, response_body, status_code, stderr
+        )
+
+        # Use .json file extension to hint that we want JSON output
+        # Use a direct instruction that asks for the analysis result
+        analysis = self._prompt_agent(
+            goal,
+            file_name="analysis_result.json",
+            constraints="Return ONLY the JSON object with success and reason fields",
+            backstory="Analyze the API response and return JSON: ",
+        )
+
+        if return_prompt:
+            return analysis, goal
+        return analysis
+
+    def retry_curl_generation(
+        self,
+        intent: str,
+        original_curl: str,
+        error_output: str,
+        swagger_context: str,
+        base_url: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Retry curl generation after a failed attempt.
+
+        Args:
+            intent (str): Original user intent
+            original_curl (str): The curl command that failed
+            error_output (str): Error message from the failed execution
+            swagger_context (str): API documentation for reference
+            base_url (str): Base URL for the API
+            return_prompt (bool): If True, returns tuple (response, prompt)
+
+        Returns:
+            str or tuple: Fixed curl command, or (fixed_curl, prompt) if return_prompt=True
+        """
+        self._initialize_conversation(
+            "You are an expert in REST API debugging, curl command troubleshooting, and error resolution."
+        )
+
+        goal = get_curl_retry_prompt(
+            intent, original_curl, error_output, swagger_context, base_url
+        )
+
+        fixed_curl = self._prompt_agent(
+            goal,
+            file_name="curl_command_fixed.sh",
+            constraints="Fix the curl command based on error analysis",
+            backstory="You are an expert in curl troubleshooting.",
+        )
+
+        if return_prompt:
+            return fixed_curl, goal
+        return fixed_curl
+
     def _initialize_conversation(self, content):
         if self.agent_type == "LOCAL":
             self.chat_history = [{"role": "system", "content": content}]
@@ -173,7 +306,7 @@ class AIAgent:
 
     def _prompt_agent(self, prompt, file_name=None, constraints=None, backstory=None):
         if not self.api_wrapper:
-            print(
+            log.safe_print(
                 "Error: No APIWrapper provided to AIAgent. Cannot communicate with AI."
             )
             return None
@@ -184,7 +317,7 @@ class AIAgent:
             try:
                 test_data["success"]["input"]["body"]["messages"] = self.chat_history
             except KeyError as e:
-                print(f"Error updating test data: {e}")
+                log.safe_print(f"Error updating test data: {e}")
                 return None
 
             response = self.builder.communicate_with_agent(
@@ -200,7 +333,7 @@ class AIAgent:
                     self.chat_history.append({"role": "assistant", "content": answer})
                     return answer
                 except (KeyError, IndexError) as e:
-                    print(f"Error parsing response: {e}")
+                    log.safe_print(f"Error parsing response: {e}")
                     return None
             return None
 
@@ -216,7 +349,7 @@ class AIAgent:
                     body["current_file"]["file_name"] = file_name or ""
                     body["current_file"]["content_above_cursor"] = backstory or ""
             except KeyError as e:
-                print(f"Error updating test data: {e}")
+                log.safe_print(f"Error updating test data: {e}")
                 return None
 
             response = self.builder.communicate_with_agent(
@@ -231,7 +364,7 @@ class AIAgent:
                     answer = response.json()["choices"][0]["text"]
                     return answer
                 except (KeyError, IndexError) as e:
-                    print(f"Error parsing response: {e}")
+                    log.safe_print(f"Error parsing response: {e}")
                     return None
             return None
 

@@ -388,3 +388,233 @@ def get_logs_analyzing_prompt(logs):
         Analyze The Logs {logs}
         /nAnd Give Me On Sugestion Or Solution Using Robot Framework
         """
+
+
+def get_curl_generation_prompt(intent: str, swagger_context: str, base_url: str) -> str:
+    """
+    Generate prompt for GitLab Duo to create an executable curl command.
+
+    Args:
+        intent (str): User's natural language intent (e.g., "delete book with id 5")
+        swagger_context (str): Retrieved swagger API documentation from RAG
+        base_url (str): Base URL for the API (e.g., "https://fakerestapi.azurewebsites.net")
+
+    Returns:
+        str: Formatted prompt for curl generation
+    """
+    return f"""
+        Your expertise: REST API integration, curl command generation, and API request construction.
+        
+        📋 **MISSION**: Generate an executable curl command based on the user's intent and the provided API documentation.
+        
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🎯 USER INTENT:
+        {intent}
+        
+        🌐 BASE URL:
+        {base_url}
+        
+        📚 API DOCUMENTATION (from Swagger):
+        {swagger_context}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        ⚡ **CRITICAL CURL GENERATION RULES** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        1️⃣ **INTENT ANALYSIS**
+        ✅ Extract the action from intent: CREATE, READ, UPDATE, DELETE
+        ✅ Identify the resource being targeted (e.g., Books, Users, Activities)
+        ✅ Extract any IDs, values, or data from the intent
+        ✅ Map action to HTTP method:
+           - "get", "fetch", "retrieve", "list", "show" → GET
+           - "create", "add", "new", "post" → POST
+           - "update", "modify", "change", "edit" → PUT
+           - "delete", "remove", "destroy" → DELETE
+        
+        2️⃣ **ENDPOINT SELECTION**
+        ✅ Match the intent to the correct endpoint from the API documentation
+        ✅ For single resource operations (get one, update one, delete one), use the endpoint with {{id}}
+        ✅ For collection operations (list all, create new), use the base resource endpoint
+        ✅ Replace path parameters with actual values from intent
+        
+        3️⃣ **PARAMETER EXTRACTION FROM INTENT**
+        ✅ Extract numeric IDs: "book 5", "id 123", "number 42" → 5, 123, 42
+        ✅ Extract string values: "named 'Test Book'" → "Test Book"
+        ✅ For POST/PUT, construct JSON body based on schema properties
+        
+        4️⃣ **CURL COMMAND FORMAT**
+        ✅ Use single-line format for cross-platform compatibility
+        ✅ Include all required headers
+        ✅ Use proper quoting for JSON body
+        ✅ Include -k flag for SSL verification bypass (if needed)
+        
+        📝 CURL TEMPLATE:
+        ```
+        curl -X METHOD "URL" -H "Content-Type: application/json" -H "Accept: application/json" -d 'JSON_BODY'
+        ```
+        
+        5️⃣ **EXAMPLES**
+        
+        Intent: "get all books"
+        → curl -X GET "{base_url}/api/v1/Books" -H "Accept: application/json"
+        
+        Intent: "delete book with id 5"
+        → curl -X DELETE "{base_url}/api/v1/Books/5" -H "Accept: application/json"
+        
+        Intent: "create a new book titled 'Test Book' with 100 pages"
+        → curl -X POST "{base_url}/api/v1/Books" -H "Content-Type: application/json" -H "Accept: application/json" -d '{{"id":0,"title":"Test Book","pageCount":100,"description":"","excerpt":"","publishDate":"2026-02-06T00:00:00.000Z"}}'
+        
+        Intent: "update book 3 with new title 'Updated Title'"
+        → curl -X PUT "{base_url}/api/v1/Books/3" -H "Content-Type: application/json" -H "Accept: application/json" -d '{{"id":3,"title":"Updated Title","pageCount":0,"description":"","excerpt":"","publishDate":"2026-02-06T00:00:00.000Z"}}'
+        
+        🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🔥 **CRITICAL**: Return ONLY the curl command, nothing else!
+        
+        ✅ Single line, executable curl command
+        ✅ Properly escaped quotes
+        ✅ Complete URL with base URL + endpoint path
+        ✅ All necessary headers
+        ✅ Request body (for POST/PUT) based on schema
+        
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations or comments
+        ❌ NO markdown code blocks
+        ❌ NO multiple commands or alternatives
+        ❌ NO line breaks within the command
+        ❌ NO "Here is the curl command:" or similar phrases
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE CURL COMMAND NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_api_response_analysis_prompt(
+    intent: str,
+    curl_command: str,
+    response_body: str,
+    status_code: int,
+    stderr: str = "",
+) -> str:
+    """
+    Generate prompt for GitLab Duo to analyze API response.
+
+    Args:
+        intent (str): Original user intent
+        curl_command (str): The curl command that was executed
+        response_body (str): The response body from the API
+        status_code (int): HTTP status code (or -1 if curl failed)
+        stderr (str): Any error output from curl execution
+
+    Returns:
+        str: Formatted prompt for response analysis
+    """
+    # Truncate response body if too long to avoid token limits
+    truncated_body = (
+        response_body[:2000] if len(response_body) > 2000 else response_body
+    )
+
+    return f"""Analyze this API response and return ONLY a JSON object.
+
+Intent: {intent}
+Command: {curl_command}
+Status: {status_code}
+Response: {truncated_body}
+Error: {stderr if stderr else "None"}
+
+Rules:
+- Status 2xx with valid data = success
+- Status 4xx/5xx or error = failure
+- Check if intent was fulfilled
+
+Return ONLY this JSON format (no other text):
+{{"success": true, "reason": "explanation"}}
+or
+{{"success": false, "reason": "explanation"}}
+
+JSON result:"""
+
+
+def get_curl_retry_prompt(
+    intent: str,
+    original_curl: str,
+    error_output: str,
+    swagger_context: str,
+    base_url: str,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to fix a failed curl command.
+
+    Args:
+        intent (str): Original user intent
+        original_curl (str): The curl command that failed
+        error_output (str): Error message from the failed execution
+        swagger_context (str): API documentation for reference
+        base_url (str): Base URL for the API
+
+    Returns:
+        str: Formatted prompt for curl retry/fix
+    """
+    return f"""
+        Your expertise: REST API debugging, curl command troubleshooting, and error resolution.
+        
+        📋 **MISSION**: The previous curl command failed. Analyze the error and generate a corrected curl command.
+        
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🎯 ORIGINAL INTENT:
+        {intent}
+        
+        💻 FAILED CURL COMMAND:
+        {original_curl}
+        
+        ❌ ERROR OUTPUT:
+        {error_output}
+        
+        🌐 BASE URL:
+        {base_url}
+        
+        📚 API DOCUMENTATION:
+        {swagger_context}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        ⚡ **ERROR ANALYSIS & FIX** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        1️⃣ **COMMON ERROR FIXES**
+        ✅ Connection refused → Check URL format, add -k for SSL issues
+        ✅ 404 Not Found → Verify endpoint path and parameters
+        ✅ 400 Bad Request → Check request body JSON format
+        ✅ 415 Unsupported Media Type → Add Content-Type header
+        ✅ JSON parse error → Fix quote escaping in body
+        
+        2️⃣ **CROSS-PLATFORM CONSIDERATIONS**
+        ✅ Windows: Use double quotes for -d body, escape inner quotes
+        ✅ Linux/Mac: Use single quotes for -d body
+        ✅ Use -k flag to bypass SSL certificate issues
+        
+        🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🔥 **CRITICAL**: Return ONLY the corrected curl command!
+        
+        ✅ Single line, executable curl command
+        ✅ Fixed based on the error analysis
+        ✅ Include -k flag for SSL bypass
+        
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations
+        ❌ NO markdown
+        ❌ NO alternatives
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE FIXED CURL COMMAND NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """

@@ -1,0 +1,16 @@
+{
+  "success": {
+    "input": {
+      "body": {
+        "messages": []
+      },
+      "queryParams": {},
+      "pathParam": {}
+    },
+    "output": {
+      "status_code": 200,
+      "body": {},
+      "headers": {}
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "success": {
+    "input": {
+      "body": {
+        "current_file": {
+          "file_name": "",
+          "content_above_cursor": "",
+          "content_below_cursor": ""
+        },
+        "context": [
+          {
+            "name": "",
+            "type": "snippet",
+            "content": ""
+          }
+        ],
+        "user_instruction": "",
+        "intent": "generation"
+      },
+      "queryParams": {},
+      "pathParam": {}
+    },
+    "output": {
+      "status_code": 200,
+      "body": {},
+      "headers": {}
+    }
+  }
+}

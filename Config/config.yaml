@@ -1,0 +1,8 @@
+agent_type: "GITLAB_DUO"
+headless: false
+slow_mo: 1000
+agent_mode: "ENABLED"
+manage_browser_lifecycle: true
+timeout: 5000
+max_retries: 3
+retry_interval: 1

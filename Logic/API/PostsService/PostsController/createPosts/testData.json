@@ -1,0 +1,19 @@
+{
+  "success": {
+    "input": {
+      "body": {
+        "title": "I x in love with someone.",
+        "userId": 5
+      },
+      "queryParams": {},
+      "pathParam": {}
+    },
+    "output": {
+      "status_code": 201,
+      "body": {
+        "title": "I am in love with someone."
+      },
+      "headers": {}
+    }
+  }
+}

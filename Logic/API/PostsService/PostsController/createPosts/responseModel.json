@@ -1,0 +1,13 @@
+{
+    "success": {
+        "id": 252,
+        "title": "I am in love with someone.",
+        "userId": 5
+    },
+    "notFound": {
+        "timestamp": "2026-01-30T05:17:07.880+00:00",
+        "status": 404,
+        "error": "Not Found",
+        "path": "/posts"
+    }
+}

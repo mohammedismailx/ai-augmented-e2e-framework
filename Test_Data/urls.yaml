@@ -1,0 +1,13 @@
+saucedemo:
+  base_url: "https://www.saucedemo.com/"
+  inventory_url: "https://www.saucedemo.com/inventory.html"
+
+api:
+  base_url: "https://dummyjson.com"
+
+gitlab:
+  base_url: "https://gitlab.com/api/v4"
+
+
+ollama:
+  base_url: "http://127.0.0.1:2213"

@@ -1,0 +1,4 @@
+LOGIN:
+  # Credentials are now loaded from .env file
+  username: ""
+  password: ""

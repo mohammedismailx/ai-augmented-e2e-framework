@@ -180,32 +180,80 @@ class FrameworkLogger:
 
 class IntentLogger:
     """
-    Logger specifically for intent-based API execution.
+    Logger specifically for intent-based API/DB execution.
     Logs to both console and file with proper formatting.
+    Automatically reads test ID and title from builtins.CURRENT_TEST_INFO.
     """
 
-    def __init__(self, log_file: str = "api_with_intent_logs.txt"):
-        """Initialize the intent logger with a log file."""
-        self.log_file = log_file
+    # Class-level log file paths
+    API_LOG_FILE = "api_with_intent_logs.txt"
+    DB_LOG_FILE = "db_with_intent_logs.txt"
+
+    def __init__(self, log_file: str = None, test_type: str = "API"):
+        """
+        Initialize the intent logger.
+
+        Args:
+            log_file: Path to log file. If None, uses default based on test_type.
+            test_type: Type of test - "API" or "DB"
+        """
+        self.test_type = test_type.upper()
+        if log_file is None:
+            self.log_file = (
+                self.DB_LOG_FILE if self.test_type == "DB" else self.API_LOG_FILE
+            )
+        else:
+            self.log_file = log_file
         self.file_handle = None
         self.session_start = None
+        self.test_id = None
+        self.test_title = None
+
+    def _get_test_info_from_builtins(self):
+        """Get test ID and title from builtins.CURRENT_TEST_INFO if available."""
+        import builtins
+
+        test_info = getattr(builtins, "CURRENT_TEST_INFO", {})
+        self.test_id = test_info.get("id", "UNKNOWN")
+        self.test_title = test_info.get("title", "")
+        return self.test_id, self.test_title
 
     def start_session(self, intent: str = None):
-        """Start a new logging session."""
+        """Start a new logging session with test ID from pytest markers."""
         self.session_start = datetime.now()
 
-        # Open file in append mode with UTF-8 encoding
+        # Get test info from builtins (set by pytest fixture)
+        test_id, test_title = self._get_test_info_from_builtins()
+
+        # Open file in append mode with explicit UTF-8 encoding (no BOM)
+        # Using newline="" to prevent double line endings on Windows
         try:
-            self.file_handle = open(self.log_file, "a", encoding="utf-8")
+            self.file_handle = open(
+                self.log_file, "a", encoding="utf-8", errors="replace", newline="\n"
+            )
         except Exception as e:
             FrameworkLogger.warning(f"Could not open log file: {e}")
             self.file_handle = None
 
+        # Build header with test ID prominently displayed
         intent_line = f"Intent: {intent}" if intent else ""
+
         header = f"""
+
+################################################################################
+################################################################################
+##                                                                            ##
+##  NEW TEST EXECUTION: [{test_id}] {test_title:<43} ##
+##                                                                            ##
+################################################################################
+################################################################################
+
 ================================================================================
-                    INTENT-BASED API EXECUTION LOG
+                    INTENT-BASED {self.test_type} EXECUTION LOG
 ================================================================================
+Test ID: {test_id}
+Test Title: {test_title or 'N/A'}
+Test Type: {self.test_type}
 Session Start: {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}
 {intent_line}
 ================================================================================
@@ -216,8 +264,11 @@ Session Start: {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}
         """End the logging session."""
         if self.session_start:
             duration = datetime.now() - self.session_start
+            test_id = self.test_id or "UNKNOWN"
+            test_title = self.test_title or ""
             footer = f"""
 ================================================================================
+END OF TEST: [{test_id}] {test_title}
 Session End: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 Duration: {duration.total_seconds():.2f} seconds
 ================================================================================

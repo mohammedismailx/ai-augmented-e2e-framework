@@ -837,7 +837,10 @@ class Rag:
     # ==================== SWAGGER/API INTENT METHODS ====================
 
     def embed_swagger_by_resource(
-        self, swagger_path: str, collection_name: str = "api_endpoints"
+        self,
+        swagger_path: str,
+        collection_name: str = "api_endpoints",
+        force_refresh: bool = False,
     ):
         """
         Parse swagger.json, group endpoints by resource (e.g., Books, Users, Activities),
@@ -846,6 +849,7 @@ class Rag:
         Args:
             swagger_path (str): Absolute path to the swagger.json file
             collection_name (str): Name of the ChromaDB collection to create/use
+            force_refresh (bool): If True, delete existing collection and re-embed
 
         Returns:
             ChromaDB collection with embedded API endpoints
@@ -855,6 +859,16 @@ class Rag:
         log.safe_print(f"\n{'='*80}")
         log.safe_print(f"[Embedding] Swagger API Endpoints from '{swagger_path}'")
         log.safe_print(f"{'='*80}")
+
+        # Handle force refresh - delete existing collection
+        if force_refresh:
+            try:
+                self.client.delete_collection(collection_name)
+                log.safe_print(
+                    f"[Refresh] Deleted existing collection: {collection_name}"
+                )
+            except Exception:
+                pass  # Collection doesn't exist, that's fine
 
         # Load swagger file
         try:
@@ -1341,6 +1355,567 @@ class Rag:
         )
 
         return test_embedding
+
+    # ==================== DB INTENT-BASED FUNCTIONS ====================
+
+    def embed_db_schema(
+        self,
+        schema_data: dict,
+        collection_name: str = "db_context",
+        force_refresh: bool = False,
+    ):
+        """
+        Embed database schema with table relationships into ChromaDB.
+        Groups related tables together based on foreign key relationships.
+
+        Args:
+            schema_data: Dict of table_name -> {"columns": [...], "foreign_keys": [...]}
+                        where columns come from DESCRIBE table query
+            collection_name: Name of the ChromaDB collection
+            force_refresh: If True, clears existing schema documents before embedding
+
+        Returns:
+            ChromaDB collection with embedded schema
+        """
+        import json
+        from collections import defaultdict
+
+        log.safe_print(f"\n{'='*80}")
+        log.safe_print(f"[Embedding] Database Schema into '{collection_name}'")
+        log.safe_print(f"{'='*80}")
+
+        # Initialize collection
+        db_collection = self.intialize_chroma_db(name=collection_name)
+
+        if not schema_data:
+            log.safe_print("[[WARNING]] No schema data provided")
+            return db_collection
+
+        # If force refresh, remove existing schema documents
+        if force_refresh:
+            try:
+                existing = db_collection.get(where={"type": "schema"})
+                if existing and existing.get("ids"):
+                    db_collection.delete(ids=existing["ids"])
+                    log.safe_print(
+                        f"[Info] Removed {len(existing['ids'])} existing schema documents"
+                    )
+            except Exception as e:
+                log.safe_print(f"[Warning] Could not clear existing schema: {e}")
+
+        log.safe_print(f"[Info] Found {len(schema_data)} tables in schema")
+
+        # Build relationships from foreign_keys data
+        relationships = []
+        for table_name, table_info in schema_data.items():
+            fks = table_info.get("foreign_keys", [])
+            for fk in fks:
+                if fk:
+                    relationships.append(
+                        {
+                            "from_table": table_name,
+                            "from_column": fk.get("COLUMN_NAME", ""),
+                            "to_table": fk.get("REFERENCED_TABLE_NAME", ""),
+                            "to_column": fk.get("REFERENCED_COLUMN_NAME", ""),
+                        }
+                    )
+
+        log.safe_print(f"[Info] Found {len(relationships)} foreign key relationships")
+
+        # Group related tables based on relationships
+        table_groups = self._group_tables_by_fk(schema_data, relationships)
+        log.safe_print(f"[Info] Created {len(table_groups)} table groups for embedding")
+
+        # Embed each table group
+        documents = []
+        metadatas = []
+        ids = []
+
+        for group_idx, group_info in enumerate(table_groups):
+            doc_content = self._format_table_group_for_embedding(group_info)
+
+            table_names = group_info["tables"]
+            doc_id = f"schema_{group_idx}_{('_'.join(table_names[:3]))[:50]}"
+
+            documents.append(doc_content)
+            metadatas.append(
+                {
+                    "type": "schema",
+                    "tables": json.dumps(table_names),
+                    "has_relationships": len(group_info.get("relationships", [])) > 0,
+                    "table_count": len(table_names),
+                }
+            )
+            ids.append(doc_id)
+
+            log.safe_print(f"\n[Group {group_idx + 1}] Tables: {table_names}")
+
+        # Add to collection
+        if documents:
+            try:
+                db_collection.add(documents=documents, metadatas=metadatas, ids=ids)
+                log.safe_print(
+                    f"\n[[OK]] Successfully embedded {len(documents)} table groups"
+                )
+            except Exception as e:
+                log.safe_print(f"[[ERROR]] Error embedding schema: {e}")
+
+        return db_collection
+
+    def _group_tables_by_fk(self, schema_data: dict, relationships: list) -> list:
+        """
+        Group tables by foreign key relationships.
+        Tables that reference each other are grouped together.
+        """
+        from collections import defaultdict
+
+        # Build adjacency list
+        adjacency = defaultdict(set)
+        for rel in relationships:
+            from_table = rel["from_table"]
+            to_table = rel["to_table"]
+            if from_table and to_table:
+                adjacency[from_table].add(to_table)
+                adjacency[to_table].add(from_table)
+
+        # Find connected components using BFS
+        visited = set()
+        groups = []
+
+        all_tables = set(schema_data.keys())
+
+        for start_table in all_tables:
+            if start_table in visited:
+                continue
+
+            # BFS to find all connected tables
+            component = set()
+            queue = [start_table]
+
+            while queue:
+                table = queue.pop(0)
+                if table in visited:
+                    continue
+                visited.add(table)
+                component.add(table)
+
+                for neighbor in adjacency.get(table, []):
+                    if neighbor not in visited and neighbor in all_tables:
+                        queue.append(neighbor)
+
+            # Build group info
+            group_tables = list(component)
+            group_columns = {t: schema_data[t].get("columns", []) for t in group_tables}
+            group_relationships = [
+                r
+                for r in relationships
+                if r["from_table"] in component or r["to_table"] in component
+            ]
+
+            groups.append(
+                {
+                    "tables": group_tables,
+                    "columns": group_columns,
+                    "relationships": group_relationships,
+                }
+            )
+
+        return groups
+
+    def _format_table_group_for_embedding(self, group_info: dict) -> str:
+        """
+        Format a group of related tables into a document for embedding.
+        """
+        lines = []
+        lines.append("=== DATABASE SCHEMA ===\n")
+
+        for table_name in group_info["tables"]:
+            columns = group_info["columns"].get(table_name, [])
+            lines.append(f"TABLE: {table_name}")
+            lines.append("-" * 40)
+
+            for col in columns:
+                # Handle DESCRIBE output format
+                col_name = col.get("Field", col.get("COLUMN_NAME", "unknown"))
+                col_type = col.get("Type", col.get("DATA_TYPE", "unknown"))
+                nullable = col.get("Null", col.get("IS_NULLABLE", "YES"))
+                key = col.get("Key", "")
+                default = col.get("Default", col.get("COLUMN_DEFAULT", ""))
+
+                key_indicator = ""
+                if key == "PRI":
+                    key_indicator = " [PRIMARY KEY]"
+                elif key == "MUL":
+                    key_indicator = " [FOREIGN KEY]"
+                elif key == "UNI":
+                    key_indicator = " [UNIQUE]"
+
+                null_indicator = "NULL" if nullable == "YES" else "NOT NULL"
+
+                lines.append(
+                    f"  - {col_name}: {col_type} {null_indicator}{key_indicator}"
+                )
+
+            lines.append("")
+
+        # Add relationship info
+        if group_info.get("relationships"):
+            lines.append("RELATIONSHIPS:")
+            for rel in group_info["relationships"]:
+                lines.append(
+                    f"  - {rel['from_table']}.{rel['from_column']} -> {rel['to_table']}.{rel['to_column']}"
+                )
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _detect_table_relationships(self, tables: dict) -> list:
+        """
+        Detect foreign key relationships based on naming conventions.
+        Looks for columns ending in '_id' that match other table names.
+        """
+        relationships = []
+
+        table_names = set(tables.keys())
+        table_names_lower = {t.lower(): t for t in table_names}
+
+        for table_name, columns in tables.items():
+            for col in columns:
+                col_name = col.get("COLUMN_NAME", "").lower()
+
+                # Check for foreign key patterns: user_id, post_id, etc.
+                if col_name.endswith("_id") and col_name != "id":
+                    # Extract potential referenced table
+                    ref_table_singular = col_name[:-3]  # Remove '_id'
+                    ref_table_plural = ref_table_singular + "s"
+
+                    # Check if referenced table exists
+                    for potential_ref in [ref_table_singular, ref_table_plural]:
+                        if potential_ref in table_names_lower:
+                            relationships.append(
+                                {
+                                    "from_table": table_name,
+                                    "from_column": col.get("COLUMN_NAME"),
+                                    "to_table": table_names_lower[potential_ref],
+                                    "to_column": "id",
+                                }
+                            )
+                            break
+
+        return relationships
+
+    def _group_related_tables(self, tables: dict, relationships: list) -> list:
+        """
+        Group tables that are related via foreign keys.
+        Uses Union-Find algorithm to find connected components.
+        """
+        from collections import defaultdict
+
+        # Build adjacency list
+        adjacency = defaultdict(set)
+        for rel in relationships:
+            adjacency[rel["from_table"]].add(rel["to_table"])
+            adjacency[rel["to_table"]].add(rel["from_table"])
+
+        # Find connected components using BFS
+        visited = set()
+        groups = []
+
+        for table_name in tables.keys():
+            if table_name in visited:
+                continue
+
+            # BFS to find all connected tables
+            group_tables = set()
+            queue = [table_name]
+
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                group_tables.add(current)
+
+                for neighbor in adjacency[current]:
+                    if neighbor not in visited and neighbor in tables:
+                        queue.append(neighbor)
+
+            # Build group info
+            group_relationships = [
+                rel
+                for rel in relationships
+                if rel["from_table"] in group_tables or rel["to_table"] in group_tables
+            ]
+
+            group_columns = {t: tables[t] for t in group_tables}
+
+            groups.append(
+                {
+                    "tables": group_tables,
+                    "columns": group_columns,
+                    "relationships": group_relationships,
+                }
+            )
+
+        return groups
+
+    def _format_db_schema_document(
+        self, table_names: set, columns: dict, relationships: list
+    ) -> str:
+        """
+        Format a table group into a document for embedding.
+        Includes searchable keywords for better semantic matching.
+        """
+        doc_parts = []
+
+        # Header with all table names
+        doc_parts.append(f"Tables: {', '.join(sorted(table_names))}")
+
+        # Relationships
+        if relationships:
+            rel_strs = []
+            for rel in relationships:
+                rel_strs.append(
+                    f"{rel['from_table']}.{rel['from_column']} -> {rel['to_table']}.{rel['to_column']}"
+                )
+            doc_parts.append(f"Relationships: {'; '.join(rel_strs)}")
+
+        # Table details
+        for table_name in sorted(table_names):
+            doc_parts.append(f"\nTable: {table_name}")
+
+            table_cols = columns.get(table_name, [])
+            col_strs = []
+            primary_keys = []
+            nullable_cols = []
+
+            for col in table_cols:
+                col_name = col.get("COLUMN_NAME", "")
+                col_type = col.get("COLUMN_TYPE", col.get("DATA_TYPE", ""))
+                is_nullable = col.get("IS_NULLABLE", "YES") == "YES"
+                is_pk = col.get("COLUMN_KEY", "") == "PRI"
+
+                col_str = f"{col_name}({col_type})"
+                if is_pk:
+                    col_str += "*"
+                    primary_keys.append(col_name)
+                if not is_nullable:
+                    col_str += "!"
+
+                col_strs.append(col_str)
+                if is_nullable:
+                    nullable_cols.append(col_name)
+
+            doc_parts.append(f"  Columns: {', '.join(col_strs)}")
+
+            if primary_keys:
+                doc_parts.append(f"  PrimaryKey: {', '.join(primary_keys)}")
+
+        # Add searchable action keywords
+        keywords = self._get_db_action_keywords(table_names)
+        doc_parts.append(f"\nActions: {keywords}")
+
+        return "\n".join(doc_parts)
+
+    def _get_db_action_keywords(self, table_names: set) -> str:
+        """Generate action keywords for better semantic search matching."""
+        keywords = []
+
+        for table in table_names:
+            singular = table.rstrip("s") if table.endswith("s") else table
+            plural = table if table.endswith("s") else table + "s"
+
+            keywords.extend(
+                [
+                    f"get {singular}",
+                    f"get all {plural}",
+                    f"find {singular}",
+                    f"select from {table}",
+                    f"query {table}",
+                    f"list {plural}",
+                    f"fetch {singular}",
+                    f"retrieve {plural}",
+                    f"count {plural}",
+                    f"search {table}",
+                ]
+            )
+
+        return ", ".join(keywords[:20])  # Limit to avoid too long strings
+
+    def store_query_learning(
+        self,
+        intent: str,
+        query: str,
+        tables_used: list,
+        is_correct: bool,
+        error_message: str = None,
+        collection_name: str = "db_context",
+    ):
+        """
+        Store a query execution result in the learning context.
+
+        Args:
+            intent: The user's original intent
+            query: The generated SQL query
+            tables_used: List of table names used in the query
+            is_correct: Whether the query executed successfully
+            error_message: Error message if query failed
+            collection_name: ChromaDB collection name
+
+        Returns:
+            The document ID that was stored
+        """
+        import json
+        import hashlib
+        from datetime import datetime
+
+        log.safe_print(f"\n[Learning] Storing query result...")
+        log.safe_print(f"  Intent: {intent[:50]}...")
+        log.safe_print(f"  Status: {'[correct]' if is_correct else '[incorrect]'}")
+
+        # Get or create collection
+        db_collection = self.chroma_client.get_or_create_collection(
+            name=collection_name, embedding_function=self.embedding_fn
+        )
+
+        # Create document content
+        status_tag = "[correct]" if is_correct else "[incorrect]"
+        doc_content = f"""{status_tag}
+Intent: {intent}
+Query: {query}
+Tables: {', '.join(tables_used)}"""
+
+        if error_message and not is_correct:
+            doc_content += f"\nError: {error_message}"
+
+        # Generate unique ID based on intent and query hash
+        hash_input = f"{intent}_{query}_{datetime.now().isoformat()}"
+        doc_id = f"learning_{hashlib.md5(hash_input.encode()).hexdigest()[:12]}"
+
+        metadata = {
+            "type": "learning",
+            "status": "correct" if is_correct else "incorrect",
+            "intent": intent[:500],  # Truncate for metadata
+            "query": query[:1000],  # Truncate for metadata
+            "tables_used": json.dumps(tables_used),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        if error_message and not is_correct:
+            metadata["error"] = error_message[:500]
+
+        try:
+            db_collection.add(
+                documents=[doc_content], metadatas=[metadata], ids=[doc_id]
+            )
+            log.safe_print(f"[[OK]] Stored learning document: {doc_id}")
+            return doc_id
+        except Exception as e:
+            log.safe_print(f"[[ERROR]] Failed to store learning: {e}")
+            return None
+
+    def retrieve_db_context_by_intent(
+        self,
+        intent: str,
+        collection_name: str = "db_context",
+        top_k_schema: int = 2,
+        top_k_learning: int = 3,
+    ) -> dict:
+        """
+        Retrieve both schema context and learning examples by intent.
+
+        Args:
+            intent: User's natural language intent
+            collection_name: ChromaDB collection name
+            top_k_schema: Number of schema documents to retrieve
+            top_k_learning: Number of learning examples to retrieve
+
+        Returns:
+            dict: {
+                "schema": [schema documents],
+                "correct_examples": [correct query examples],
+                "incorrect_examples": [incorrect query examples]
+            }
+        """
+        log.safe_print(f"\n[RAG] Retrieving DB context for intent: '{intent}'")
+
+        result = {"schema": [], "correct_examples": [], "incorrect_examples": []}
+
+        try:
+            # Get collection
+            db_collection = self.chroma_client.get_or_create_collection(
+                name=collection_name, embedding_function=self.embedding_fn
+            )
+
+            collection_count = db_collection.count()
+            if collection_count == 0:
+                log.safe_print(f"[[WARNING]] Collection '{collection_name}' is empty")
+                return result
+
+            log.safe_print(f"[Info] Collection has {collection_count} documents")
+
+            # Generate query embedding
+            query_embedding = self._generate_query_embedding(intent)
+
+            # Retrieve schema documents
+            schema_results = db_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k_schema,
+                where={"type": "schema"},
+                include=["documents", "metadatas", "distances"],
+            )
+
+            if schema_results and schema_results.get("documents"):
+                result["schema"] = schema_results["documents"][0]
+                log.safe_print(
+                    f"[[OK]] Found {len(result['schema'])} schema document(s)"
+                )
+                for i, doc in enumerate(result["schema"]):
+                    preview = doc[:100].replace("\n", " ")
+                    log.safe_print(f"  [{i+1}] {preview}...")
+
+            # Retrieve correct learning examples
+            try:
+                correct_results = db_collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k_learning,
+                    where={"$and": [{"type": "learning"}, {"status": "correct"}]},
+                    include=["documents", "metadatas", "distances"],
+                )
+
+                if correct_results and correct_results.get("documents"):
+                    result["correct_examples"] = correct_results["documents"][0]
+                    log.safe_print(
+                        f"[[OK]] Found {len(result['correct_examples'])} correct example(s)"
+                    )
+            except Exception as e:
+                log.safe_print(f"[Info] No correct examples found: {e}")
+
+            # Retrieve incorrect learning examples (for negative examples)
+            try:
+                incorrect_results = db_collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=2,  # Fewer incorrect examples
+                    where={"$and": [{"type": "learning"}, {"status": "incorrect"}]},
+                    include=["documents", "metadatas", "distances"],
+                )
+
+                if incorrect_results and incorrect_results.get("documents"):
+                    result["incorrect_examples"] = incorrect_results["documents"][0]
+                    log.safe_print(
+                        f"[[OK]] Found {len(result['incorrect_examples'])} incorrect example(s)"
+                    )
+            except Exception as e:
+                log.safe_print(f"[Info] No incorrect examples found: {e}")
+
+            return result
+
+        except Exception as e:
+            log.safe_print(f"[[ERROR]] Error retrieving DB context: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return result
 
 
 if __name__ == "__main__":

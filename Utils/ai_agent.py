@@ -14,6 +14,9 @@ from Resources.prompts import (
     get_curl_generation_prompt,
     get_api_response_analysis_prompt,
     get_curl_retry_prompt,
+    get_db_query_generation_prompt,
+    get_db_query_analysis_prompt,
+    get_db_query_retry_prompt,
 )
 from Libs.IntentLocatorLibrary import IntentLocatorLibrary
 from Libs.IntentQueriesLibrary import IntentQueriesLibrary
@@ -74,6 +77,14 @@ class AIAgent:
                 kwargs.get("intent"),
                 kwargs.get("swagger_context"),
                 kwargs.get("base_url"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "DB_QUERY_INTENT":
+            return self.execute_db_query_intent_context(
+                kwargs.get("intent"),
+                kwargs.get("schema_context"),
+                kwargs.get("correct_examples", ""),
+                kwargs.get("incorrect_examples", ""),
                 kwargs.get("return_prompt", False),
             )
         return None
@@ -297,6 +308,170 @@ class AIAgent:
         if return_prompt:
             return fixed_curl, goal
         return fixed_curl
+
+    # ========================================================================
+    # DB QUERY GENERATION METHODS (Intent-based SQL generation)
+    # ========================================================================
+
+    def generate_db_query(
+        self,
+        intent,
+        schema_context,
+        correct_examples="",
+        incorrect_examples="",
+        return_prompt=False,
+    ):
+        """
+        Generate SQL query based on user intent using GitLab Duo.
+
+        Args:
+            intent (str): User's natural language intent (e.g., "get all posts by user 5")
+            schema_context (str): Database schema documentation from RAG
+            correct_examples (str): Previously successful queries for similar intents
+            incorrect_examples (str): Previously failed queries to avoid
+            return_prompt (bool): If True, returns tuple (query, prompt)
+
+        Returns:
+            str or tuple: Generated SQL query, or (query, prompt) if return_prompt=True
+        """
+        self._initialize_conversation(
+            "You are an expert MySQL database engineer specializing in query generation."
+        )
+
+        goal = get_db_query_generation_prompt(
+            intent, schema_context, correct_examples, incorrect_examples
+        )
+
+        sql_query = self._prompt_agent(
+            goal,
+            file_name="generated_query.sql",
+            constraints="Generate a single, optimized SQL query for the given intent",
+            backstory="You are an expert MySQL query generator.",
+        )
+
+        if return_prompt:
+            return sql_query, goal
+        return sql_query
+
+    def analyze_db_result(self, intent, sql_query, result, return_prompt=False):
+        """
+        Analyze database query result to determine if it meets the intent.
+
+        Args:
+            intent (str): Original user intent
+            sql_query (str): The SQL query that was executed
+            result (str): Query result (JSON stringified or error message)
+            return_prompt (bool): If True, returns tuple (analysis, prompt)
+
+        Returns:
+            dict or tuple: Analysis result {"success": bool, "reason": str},
+                          or (analysis, prompt) if return_prompt=True
+        """
+        self._initialize_conversation(
+            "You are an expert database analyst specializing in query result validation."
+        )
+
+        goal = get_db_query_analysis_prompt(intent, sql_query, result)
+
+        analysis_response = self._prompt_agent(
+            goal,
+            file_name="query_analysis.json",
+            constraints='Return ONLY {"success": true/false, "reason": "explanation"}',
+            backstory="You are an expert in database result analysis.",
+        )
+
+        # Parse the analysis response
+        try:
+            if analysis_response:
+                # Try to extract JSON from the response
+                import re
+
+                # Look for JSON object with success key - handle nested content
+                # Pattern matches: {"success": true/false, "reason": "..."}
+                json_pattern = r'\{\s*"success"\s*:\s*(true|false)\s*,\s*"reason"\s*:\s*"([^"]*(?:\\.[^"]*)*)"\s*\}'
+                json_match = re.search(json_pattern, analysis_response, re.IGNORECASE)
+
+                if json_match:
+                    success_str = json_match.group(1).lower()
+                    reason = json_match.group(2)
+                    analysis = {"success": success_str == "true", "reason": reason}
+                else:
+                    # Fallback: try to find any JSON object
+                    # Find the last occurrence of {"success"
+                    json_start = analysis_response.rfind('{"success"')
+                    if json_start != -1:
+                        # Find matching closing brace
+                        json_str = analysis_response[json_start:]
+                        brace_count = 0
+                        json_end = 0
+                        for i, char in enumerate(json_str):
+                            if char == "{":
+                                brace_count += 1
+                            elif char == "}":
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    json_end = i + 1
+                                    break
+                        if json_end > 0:
+                            analysis = json.loads(json_str[:json_end])
+                        else:
+                            analysis = {
+                                "success": False,
+                                "reason": "Could not parse JSON from response",
+                            }
+                    else:
+                        analysis = json.loads(analysis_response)
+            else:
+                analysis = {"success": False, "reason": "No response from AI agent"}
+        except json.JSONDecodeError:
+            analysis = {
+                "success": False,
+                "reason": f"Could not parse AI response: {analysis_response[:200] if analysis_response else 'None'}",
+            }
+
+        if return_prompt:
+            return analysis, goal
+        return analysis
+
+    def retry_db_query(
+        self,
+        intent,
+        original_query,
+        error_message,
+        schema_context,
+        return_prompt=False,
+    ):
+        """
+        Retry SQL query generation after a failed attempt.
+
+        Args:
+            intent (str): Original user intent
+            original_query (str): The SQL query that failed
+            error_message (str): Error message from the failed execution
+            schema_context (str): Database schema for reference
+            return_prompt (bool): If True, returns tuple (query, prompt)
+
+        Returns:
+            str or tuple: Fixed SQL query, or (query, prompt) if return_prompt=True
+        """
+        self._initialize_conversation(
+            "You are an expert in MySQL debugging and query troubleshooting."
+        )
+
+        goal = get_db_query_retry_prompt(
+            intent, original_query, error_message, schema_context
+        )
+
+        fixed_query = self._prompt_agent(
+            goal,
+            file_name="query_fixed.sql",
+            constraints="Fix the SQL query based on error analysis",
+            backstory="You are an expert in SQL troubleshooting.",
+        )
+
+        if return_prompt:
+            return fixed_query, goal
+        return fixed_query
 
     def _initialize_conversation(self, content):
         if self.agent_type == "LOCAL":

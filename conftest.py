@@ -4,6 +4,7 @@ import yaml
 import sys
 import builtins
 from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 
 # Add project root to path FIRST before importing from Utils
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__)))
@@ -13,13 +14,6 @@ sys.path.append(PROJECT_ROOT)
 from Utils.logger import FrameworkLogger as log
 
 # Optional playwright import (not needed for API tests)
-try:
-    from playwright.sync_api import sync_playwright
-
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-    log.warning("Playwright not installed. UI tests will not be available.")
 
 
 # 1. Load configuration and environment FIRST
@@ -71,16 +65,54 @@ _load_configuration_files()
 
 # 2. Now safe to import custom modules that might use globals/env
 from Utils.db_connector import DBConnector
+from Logic.UI.Login.LoginPage import LoginPage
 
-# Optional UI imports (not needed for API tests)
-try:
-    from Logic.UI.Login.LoginPage import LoginPage
 
-    UI_AVAILABLE = True
-except ImportError:
-    UI_AVAILABLE = False
-    LoginPage = None
-    log.warning("UI modules not available. UI tests will not be available.")
+# ==================== TEST INFO EXTRACTION FIXTURE ====================
+
+
+@pytest.fixture(autouse=True)
+def extract_test_markers(request):
+    """
+    Auto-use fixture that extracts @pytest.mark.id and @pytest.mark.title
+    from the current test and stores them in builtins.CURRENT_TEST_INFO.
+
+    This allows the IntentLogger to automatically read test ID and title
+    without needing to pass them as parameters.
+
+    Usage in tests:
+        @pytest.mark.id("API-001")
+        @pytest.mark.title("Get Book by ID")
+        def test_example(self, api_wrapper):
+            # Logger will automatically use "API-001" and "Get Book by ID"
+            pass
+    """
+    # Extract markers from the test
+    test_id = "UNKNOWN"
+    test_title = ""
+
+    # Get the 'id' marker
+    id_marker = request.node.get_closest_marker("id")
+    if id_marker and id_marker.args:
+        test_id = id_marker.args[0]
+
+    # Get the 'title' marker
+    title_marker = request.node.get_closest_marker("title")
+    if title_marker and title_marker.args:
+        test_title = title_marker.args[0]
+
+    # Store in builtins for global access by IntentLogger
+    builtins.CURRENT_TEST_INFO = {
+        "id": test_id,
+        "title": test_title,
+        "node_id": request.node.nodeid,
+        "name": request.node.name,
+    }
+
+    yield
+
+    # Cleanup after test
+    builtins.CURRENT_TEST_INFO = {}
 
 
 @pytest.fixture(scope="session")
@@ -100,83 +132,80 @@ def db_session():
 
 
 # ==================== UI FIXTURES (Playwright) ====================
-# These fixtures are only available when Playwright is installed
 
-if PLAYWRIGHT_AVAILABLE:
 
-    @pytest.fixture(scope="session")
-    def playwright_instance():
-        """Initialize Playwright"""
-        with sync_playwright() as p:
-            yield p
+@pytest.fixture(scope="session")
+def playwright_instance():
+    """Initialize Playwright"""
+    with sync_playwright() as p:
+        yield p
 
-    @pytest.fixture(scope="session")
-    def browser_instance(playwright_instance):
-        """
-        Initialize Browser
-        """
-        headless = builtins.CONFIG.get("headless", False)
-        slow_mo = builtins.CONFIG.get("slow_mo", 0)
 
-        log.section("FIXTURE: Initializing Browser")
+@pytest.fixture(scope="session")
+def browser_instance(playwright_instance):
+    """
+    Initialize Browser
+    """
+    headless = builtins.CONFIG.get("headless", False)
+    slow_mo = builtins.CONFIG.get("slow_mo", 0)
 
-        browser = playwright_instance.chromium.launch(
-            headless=headless, slow_mo=slow_mo
-        )
-        yield browser
+    log.section("FIXTURE: Initializing Browser")
 
-        log.section("FIXTURE: Closing Browser")
-        browser.close()
+    browser = playwright_instance.chromium.launch(headless=headless, slow_mo=slow_mo)
+    yield browser
 
-    @pytest.fixture(scope="session")
-    def auth_state(browser_instance):
-        """
-        Perform login once and save storage state.
-        """
-        storage_state_path = os.path.join(PROJECT_ROOT, "saved_states", "state.json")
-        os.makedirs(os.path.dirname(storage_state_path), exist_ok=True)
+    log.section("FIXTURE: Closing Browser")
+    browser.close()
 
-        if not os.path.exists(storage_state_path):
-            log.info("Creating authentication state...")
 
-            context = browser_instance.new_context(
-                viewport={"width": 1920, "height": 1080}
-            )
-            page = context.new_page()
+@pytest.fixture(scope="session")
+def auth_state(browser_instance):
+    """
+    Perform login once and save storage state.
+    """
+    storage_state_path = os.path.join(PROJECT_ROOT, "saved_states", "state.json")
+    os.makedirs(os.path.dirname(storage_state_path), exist_ok=True)
 
-            login_page = LoginPage(page)
-            login_page.navigate(builtins.URLS["saucedemo"]["base_url"])
+    if not os.path.exists(storage_state_path):
+        log.info("Creating authentication state...")
 
-            # Load credentials from environment
-            username = os.getenv("SAUCE_USERNAME")
-            password = os.getenv("SAUCE_PASSWORD")
-
-            login_page.login(username, password)
-
-            context.storage_state(path=storage_state_path)
-            log.ok(f"Storage state saved to: {storage_state_path}")
-
-            page.close()
-            context.close()
-        else:
-            log.ok(f"Storage state already exists: {storage_state_path}")
-
-        return storage_state_path
-
-    @pytest.fixture(scope="module")
-    def page(browser_instance, auth_state):
-        """
-        Provide a fresh page with authentication state for each module (test file).
-        """
-        context = browser_instance.new_context(
-            storage_state=auth_state, viewport={"width": 1920, "height": 1080}
-        )
+        context = browser_instance.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
 
-        yield page
+        login_page = LoginPage(page)
+        login_page.navigate(builtins.URLS["saucedemo"]["base_url"])
+
+        # Load credentials from environment
+        username = os.getenv("SAUCE_USERNAME")
+        password = os.getenv("SAUCE_PASSWORD")
+
+        login_page.login(username, password)
+
+        context.storage_state(path=storage_state_path)
+        log.ok(f"Storage state saved to: {storage_state_path}")
 
         page.close()
         context.close()
+    else:
+        log.ok(f"Storage state already exists: {storage_state_path}")
+
+    return storage_state_path
+
+
+@pytest.fixture(scope="module")
+def page(browser_instance, auth_state):
+    """
+    Provide a fresh page with authentication state for each module (test file).
+    """
+    context = browser_instance.new_context(
+        storage_state=auth_state, viewport={"width": 1920, "height": 1080}
+    )
+    page = context.new_page()
+
+    yield page
+
+    page.close()
+    context.close()
 
 
 # ==================== API CONTEXT FIXTURES ====================
@@ -189,9 +218,12 @@ def api_context():
 
     This fixture:
     1. Creates a RAG instance
-    2. Embeds swagger.json endpoints grouped by resource
+    2. Embeds swagger.json endpoints grouped by resource (if REFRESH_API_SCHEMA=true)
     3. Stores RAG instance in builtins for global access
     4. Returns the RAG instance for use in tests
+
+    Environment Variables:
+        REFRESH_API_SCHEMA: If "true", re-embeds swagger even if collection exists
 
     Usage in tests:
         def test_api_intent(api_context):
@@ -205,13 +237,41 @@ def api_context():
     # Initialize RAG
     rag = Rag()
 
+    # Check if we need to refresh schema
+    refresh_schema = os.getenv("REFRESH_API_SCHEMA", "false").lower() == "true"
+
     # Embed swagger
     swagger_path = os.path.join(PROJECT_ROOT, "swagger.json")
 
     if os.path.exists(swagger_path):
         log.ok(f"Found swagger file: {swagger_path}")
-        rag.embed_swagger_by_resource(swagger_path, collection_name="api_endpoints")
-        log.ok("Swagger endpoints embedded successfully")
+
+        if refresh_schema:
+            log.info("REFRESH_API_SCHEMA=true: Forcing swagger re-embedding")
+            rag.embed_swagger_by_resource(
+                swagger_path, collection_name="api_endpoints", force_refresh=True
+            )
+            log.ok("Swagger endpoints embedded successfully")
+        else:
+            # Check if collection already exists with data
+            try:
+                collection = rag.client.get_collection("api_endpoints")
+                if collection.count() > 0:
+                    log.ok(
+                        f"Using cached API embeddings ({collection.count()} documents)"
+                    )
+                else:
+                    log.info("Collection empty, embedding swagger...")
+                    rag.embed_swagger_by_resource(
+                        swagger_path, collection_name="api_endpoints"
+                    )
+                    log.ok("Swagger endpoints embedded successfully")
+            except Exception:
+                log.info("Collection not found, embedding swagger...")
+                rag.embed_swagger_by_resource(
+                    swagger_path, collection_name="api_endpoints"
+                )
+                log.ok("Swagger endpoints embedded successfully")
     else:
         log.warning(f"Swagger file not found: {swagger_path}")
         log.warning("API intent execution will not work without swagger embedding")
@@ -228,24 +288,122 @@ def api_context():
 @pytest.fixture(scope="session")
 def api_wrapper(api_context):
     """
-    Session-scoped fixture for APIWrapper with RAG context.
+    Session-scoped fixture for APIWrapper with RAG context and base URL pre-configured.
 
     This fixture depends on api_context to ensure swagger is embedded first.
+    The wrapper is configured with base_url and rag_instance so tests only need to provide intent.
 
     Usage in tests:
         def test_api_intent(api_wrapper):
-            result = api_wrapper.execute_by_intent(
-                intent="get all books",
-                base_url="https://fakerestapi.azurewebsites.net"
-            )
+            result = api_wrapper.execute_by_intent(intent="get all books")
     """
     from Logic.API.api_wrapper import APIWrapper
 
     log.section("FIXTURE: Initializing API Wrapper")
 
-    wrapper = APIWrapper()
-    log.ok("API Wrapper initialized")
+    # Create wrapper with base_url and rag_instance pre-configured
+    wrapper = APIWrapper(
+        base_url="https://fakerestapi.azurewebsites.net", rag_instance=api_context
+    )
+    log.ok(f"API Wrapper initialized with base_url: {wrapper.base_url}")
 
     yield wrapper
 
     log.section("FIXTURE: API Wrapper cleanup complete")
+
+
+# ==================== DB CONTEXT FIXTURES ====================
+
+
+@pytest.fixture(scope="session")
+def db_context():
+    """
+    Session-scoped fixture to initialize RAG with embedded database schema.
+
+    This fixture:
+    1. Creates a RAG instance for DB context
+    2. Connects to the database
+    3. Embeds table schemas grouped by foreign key relationships
+    4. Stores RAG instance in builtins for global access
+    5. Returns DBConnector instance for use in tests
+
+    Environment Variables:
+        REFRESH_DB_SCHEMA: If "true", re-embeds schema even if collection exists
+
+    Usage in tests:
+        def test_db_intent(db_context):
+            result = db_context.execute_by_intent(
+                intent="get all posts by user with id 5"
+            )
+            assert result["success"] is True
+    """
+    from Libs.RAG import Rag
+
+    log.section("FIXTURE: Initializing DB Context (RAG + Schema Embedding)")
+
+    # Initialize RAG for DB context
+    rag = Rag()
+
+    # Initialize DB connection
+    db = DBConnector()
+    db.connect()
+
+    # Check if we need to refresh schema
+    refresh_schema = os.getenv("REFRESH_DB_SCHEMA", "false").lower() == "true"
+
+    if refresh_schema:
+        log.info("REFRESH_DB_SCHEMA=true: Forcing schema re-embedding")
+
+    # Embed database schema
+    try:
+        log.info("Fetching database schema...")
+
+        # Get all tables
+        tables = db.get_all_tables()
+        log.ok(f"Found {len(tables)} tables: {tables}")
+
+        if tables:
+            # Build schema data for RAG embedding
+            schema_data = {}
+
+            for table_name in tables:
+                log.info(f"Fetching schema for table: {table_name}")
+
+                # Get table columns
+                columns = db.get_table_schema(table_name)
+
+                # Get foreign keys
+                foreign_keys = db.get_foreign_keys(table_name)
+
+                schema_data[table_name] = {
+                    "columns": columns or [],
+                    "foreign_keys": foreign_keys or [],
+                }
+
+            # Embed schema into RAG
+            rag.embed_db_schema(
+                schema_data=schema_data,
+                collection_name="db_context",
+                force_refresh=refresh_schema,
+            )
+            log.ok("Database schema embedded successfully")
+        else:
+            log.warning("No tables found in database")
+            log.warning("DB intent execution may not work without schema embedding")
+
+    except Exception as e:
+        log.warning(f"Failed to embed database schema: {e}")
+        log.warning("DB intent execution may not work properly")
+
+    # Store in builtins for global access
+    builtins.RAG_DB_INSTANCE = rag
+    log.ok("RAG DB instance stored in builtins.RAG_DB_INSTANCE")
+
+    # Set the RAG instance on the db connector
+    db._rag_instance = rag
+
+    yield db
+
+    log.section("FIXTURE: Closing DB Connection")
+    db.close()
+    log.section("FIXTURE: DB Context cleanup complete")

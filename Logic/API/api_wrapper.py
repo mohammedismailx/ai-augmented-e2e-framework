@@ -15,12 +15,16 @@ from Utils.logger import FrameworkLogger as log, IntentLogger
 
 class APIWrapper:
 
-    def __init__(self, base_url=None):
+    def __init__(self, base_url=None, rag_instance=None):
         """
         Initialize APIWrapper.
-        Responsible for creating its own AIAgent instance and passing 'self' as the wrapper.
+
+        Args:
+            base_url: Base URL for API calls (can be set via fixture)
+            rag_instance: RAG instance with embedded swagger (can be set via fixture)
         """
         self.base_url = base_url
+        self.rag_instance = rag_instance
         self.session = requests.Session()
         self.timeout = 30  # Default timeout
         self.config = getattr(builtins, "CONFIG", {})
@@ -130,7 +134,7 @@ class APIWrapper:
     # ==================== INTENT-BASED API EXECUTION ====================
 
     def execute_by_intent(
-        self, intent: str, base_url: str, rag_instance=None, max_retries: int = 2
+        self, intent: str, base_url: str = None, rag_instance=None, max_retries: int = 2
     ) -> dict:
         """
         Execute an API call based on natural language intent using RAG + GitLab Duo.
@@ -145,16 +149,22 @@ class APIWrapper:
 
         Args:
             intent (str): Natural language intent (e.g., "delete book with id 5")
-            base_url (str): Base URL for the API (e.g., "https://fakerestapi.azurewebsites.net")
-            rag_instance: RAG instance with embedded swagger (optional, will be retrieved from builtins if not provided)
+            base_url (str): Base URL for the API. Uses instance base_url if not provided.
+            rag_instance: RAG instance with embedded swagger. Uses instance rag_instance if not provided.
             max_retries (int): Maximum number of retry attempts for failed curl execution
 
         Returns:
             dict: Structured result with success status, curl command, response, and analysis
         """
-        # Initialize logger
-        logger = IntentLogger()
-        logger.start_session()
+        # Use instance defaults if not provided
+        if base_url is None:
+            base_url = self.base_url
+        if rag_instance is None:
+            rag_instance = self.rag_instance
+
+        # Initialize logger with API test type (reads test ID from builtins automatically)
+        logger = IntentLogger(test_type="API")
+        logger.start_session(intent=intent)
 
         logger.log(f"\n{'='*100}")
         logger.log(f"[INTENT EXECUTION] Starting intent-based API execution")

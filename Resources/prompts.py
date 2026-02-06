@@ -618,3 +618,240 @@ def get_curl_retry_prompt(
         🏁 **GENERATE FIXED CURL COMMAND NOW** 🏁
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
+
+
+# ==================== DB INTENT-BASED PROMPTS ====================
+
+
+def get_db_query_generation_prompt(
+    intent: str,
+    schema_context: str,
+    correct_examples: str = "",
+    incorrect_examples: str = "",
+) -> str:
+    """
+    Generate prompt for GitLab Duo to create a SQL query based on user intent.
+
+    Args:
+        intent: User's natural language intent (e.g., "get all posts by user id 5")
+        schema_context: Retrieved database schema from RAG
+        correct_examples: Similar successful queries from learning context
+        incorrect_examples: Similar failed queries to avoid
+
+    Returns:
+        str: Formatted prompt for SQL query generation
+    """
+    examples_section = ""
+    if correct_examples:
+        examples_section += f"""
+        ✅ **SIMILAR SUCCESSFUL QUERIES (Learn from these)**:
+        {correct_examples}
+        """
+
+    if incorrect_examples:
+        examples_section += f"""
+        ❌ **SIMILAR FAILED QUERIES (Avoid these mistakes)**:
+        {incorrect_examples}
+        """
+
+    return f"""
+        Your expertise: MySQL query generation, database schema analysis, and SQL optimization.
+        
+        📋 **MISSION**: Generate an executable MySQL query based on the user's intent and the provided database schema.
+        
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🎯 USER INTENT:
+        {intent}
+        
+        📊 DATABASE SCHEMA:
+        {schema_context}
+        {examples_section}
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        ⚡ **CRITICAL SQL GENERATION RULES** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        1️⃣ **INTENT ANALYSIS**
+        ✅ Extract the action from intent: SELECT, INSERT, UPDATE, DELETE, COUNT
+        ✅ Identify the target table(s) from the schema
+        ✅ Extract filter conditions (WHERE clauses) from the intent
+        ✅ Identify any aggregations (COUNT, SUM, AVG, etc.)
+        ✅ Map intent keywords to SQL operations:
+           - "get", "fetch", "retrieve", "list", "find", "show" → SELECT
+           - "count", "how many" → SELECT COUNT(*)
+           - "create", "add", "insert" → INSERT
+           - "update", "modify", "change" → UPDATE
+           - "delete", "remove" → DELETE
+        
+        2️⃣ **TABLE AND COLUMN SELECTION**
+        ✅ Use ONLY tables and columns that exist in the provided schema
+        ✅ Use exact column names as shown in the schema (case-sensitive)
+        ✅ For JOINs, use the relationships defined in the schema
+        ✅ If a column doesn't exist, use the closest matching column from schema
+        
+        3️⃣ **FILTER EXTRACTION FROM INTENT**
+        ✅ Extract numeric IDs: "user id 5", "post 123", "with id 42" → WHERE column = value
+        ✅ Extract string values: "named 'John'" → WHERE column = 'John'
+        ✅ Extract date ranges: "last 7 days" → WHERE date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        ✅ Extract comparisons: "greater than 10" → WHERE column > 10
+        
+        4️⃣ **JOIN LOGIC**
+        ✅ Use relationships from schema for proper JOINs
+        ✅ Prefer INNER JOIN for related data
+        ✅ Use LEFT JOIN when optional relationships are needed
+        ✅ Always use table aliases for clarity in multi-table queries
+        
+        5️⃣ **SQL FORMAT**
+        ✅ Use MySQL syntax
+        ✅ Single line format preferred
+        ✅ Use backticks for reserved words if needed
+        ✅ End query with semicolon
+        
+        📝 SQL TEMPLATE EXAMPLES:
+        
+        Intent: "get all users"
+        → SELECT * FROM users;
+        
+        Intent: "get posts by user id 5"
+        → SELECT * FROM posts WHERE user_id = 5;
+        
+        Intent: "count all active users"
+        → SELECT COUNT(*) FROM users WHERE status = 'active';
+        
+        Intent: "get user details with their posts"
+        → SELECT u.*, p.* FROM users u INNER JOIN posts p ON u.id = p.user_id;
+        
+        Intent: "get top 10 recent posts"
+        → SELECT * FROM posts ORDER BY created_at DESC LIMIT 10;
+        
+        🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🔥 **CRITICAL**: Return ONLY the SQL query, nothing else!
+        
+        ✅ Single executable MySQL query
+        ✅ Properly formatted with correct syntax
+        ✅ Uses ONLY tables/columns from the provided schema
+        ✅ Ends with semicolon
+        
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations or comments
+        ❌ NO markdown code blocks
+        ❌ NO multiple queries
+        ❌ NO "Here is the query:" or similar phrases
+        ❌ NO tables or columns not in the schema
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE SQL QUERY NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_db_query_analysis_prompt(
+    intent: str,
+    query: str,
+    result: str,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to analyze a SQL query execution result.
+
+    Args:
+        intent: Original user intent
+        query: The SQL query that was executed
+        result: Query result as JSON string or error message
+
+    Returns:
+        str: Formatted prompt for query analysis
+    """
+    # Truncate result if too long
+    result_preview = result[:1000] if result else "No results"
+
+    return f"""Analyze this SQL query execution and return ONLY a JSON object.
+
+Intent: {intent}
+Query: {query}
+Result: {result_preview}
+
+Rules:
+- Query executed without error AND returned relevant data = success
+- Query returned empty array [] but no error = success (data may not exist)
+- Query had syntax error or execution error = failure
+- Query returned data but doesn't match intent = failure
+
+Return ONLY this JSON format (no other text):
+{{"success": true, "reason": "explanation"}}
+or
+{{"success": false, "reason": "explanation"}}
+
+JSON result:"""
+
+
+def get_db_query_retry_prompt(
+    intent: str,
+    original_query: str,
+    error_message: str,
+    schema_context: str,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to fix a failed SQL query.
+
+    Args:
+        intent: Original user intent
+        original_query: The query that failed
+        error_message: Error from database
+        schema_context: Database schema for reference
+
+    Returns:
+        str: Formatted prompt for query fix
+    """
+    return f"""
+        Your expertise: MySQL debugging, SQL error resolution, and query optimization.
+        
+        📋 **MISSION**: The previous SQL query failed. Analyze the error and generate a corrected query.
+        
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🎯 ORIGINAL INTENT:
+        {intent}
+        
+        💻 FAILED QUERY:
+        {original_query}
+        
+        ❌ ERROR MESSAGE:
+        {error_message}
+        
+        📊 DATABASE SCHEMA:
+        {schema_context}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        ⚡ **COMMON ERROR FIXES** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        1️⃣ **Table doesn't exist** → Check schema for correct table name
+        2️⃣ **Unknown column** → Check schema for correct column name
+        3️⃣ **Syntax error** → Fix SQL syntax
+        4️⃣ **Ambiguous column** → Add table alias prefix
+        5️⃣ **Data type mismatch** → Cast or convert data types
+        
+        🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🔥 **CRITICAL**: Return ONLY the corrected SQL query!
+        
+        ✅ Single executable MySQL query
+        ✅ Fixed based on the error analysis
+        ✅ Uses ONLY tables/columns from the schema
+        
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations
+        ❌ NO markdown
+        ❌ NO alternatives
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE FIXED SQL QUERY NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """

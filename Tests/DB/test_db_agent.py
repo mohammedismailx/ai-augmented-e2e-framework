@@ -1,41 +1,38 @@
-import sys
-import builtins
+"""
+Intent-Based Database Testing with RAG + GitLab Duo
+
+This module demonstrates the DB intent execution flow:
+1. User provides natural language intent
+2. RAG retrieves relevant schema context + learning examples
+3. GitLab Duo generates SQL query
+4. Query is executed and analyzed
+5. Result is stored for future learning (correct/incorrect)
+
+Usage:
+    pytest Tests/DB/test_db_agent.py -v -s
+"""
+
 import pytest
 
-# Ensure project root is in path
-if not hasattr(builtins, "PROJECT_ROOT"):
-    import os
 
-    builtins.PROJECT_ROOT = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..")
-    )
-sys.path.append(builtins.PROJECT_ROOT)
+class TestDBIntentExecution:
+    """
+    Test class for intent-based database query execution.
 
-from Utils.db_connector import DBConnector
-from Utils.retrieveQueries import retrieve_and_execute_query
+    Uses the db_context fixture which:
+    - Embeds database schema into ChromaDB
+    - Provides DBConnector with execute_by_intent() method
+    - Stores query results for learning
+    """
 
-
-class TestDBQueries:
-    def test_get_agents_by_user_id(self, db_session):
-        """
-        Example test case to demonstrate DB connection and AI self-healing.
-        """
-        # 1. Execute smart query with intent
-        # If the query name or execution fails, the AI will use the intent to find the data.
-        try:
-            results = retrieve_and_execute_query(
-                query_name="GET_POSTS_BY_USER_ID",
-                intent="Get all agent information for user id 5",
-                db_connector=db_session,
-                user_id=5,
-            )
-
-            if results:
-                print(f"✓ Found {len(results)} records")
-                for row in results:
-                    print(row)
-            else:
-                print("ℹ No records found.")
-
-        except Exception as e:
-            print(f"⚠️ Smart DB retrieval failed: {e}")
+    @pytest.mark.db_intent
+    @pytest.mark.id("DB-001")
+    @pytest.mark.title("Verify Agents Table Schema")
+    def test_get_all_agents(self, db_context):
+        result = db_context.execute_by_intent(
+            intent="verify that the agents table contains an agent name column"
+        )
+        # Assert based on AI analysis result
+        assert result[
+            "success"
+        ], f"AI Analysis Failed: {result.get('reason', 'No reason provided')}"

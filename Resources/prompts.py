@@ -502,7 +502,7 @@ def get_api_response_analysis_prompt(
     stderr: str = "",
 ) -> str:
     """
-    Generate prompt for GitLab Duo to analyze API response.
+    Generate prompt for analyzing API response.
 
     Args:
         intent (str): Original user intent
@@ -514,41 +514,30 @@ def get_api_response_analysis_prompt(
     Returns:
         str: Formatted prompt for response analysis
     """
-    # Truncate response body if too long to avoid token limits
-    truncated_body = (
-        response_body[:2000] if len(response_body) > 2000 else response_body
-    )
+    return f"""Analyze this API response and determine if the intent was fulfilled.
 
-    return f"""Analyze this API response and determine if the INTENT was completely fulfilled.
+**User Intent:** {intent}
 
-Intent: {intent}
-Command: {curl_command}
-Status: {status_code}
-Response: {truncated_body}
-Error: {stderr if stderr else "None"}
+**Curl Command:** {curl_command}
 
-**CRITICAL RULES FOR VERIFICATION/VALIDATION INTENTS:**
-- If intent contains "verify", "check", "confirm", "ensure", "validate", "make sure":
-  - You MUST check if the response data matches the expected values in the intent
-  - Example: "verify title is Activity 10" → Check if response has "title": "Activity 10"
-  - If data exists but doesn't match expected value = FAILURE
-  - If data matches expected value = SUCCESS
+**HTTP Status Code:** {status_code}
 
-**GENERAL RULES:**
-- Status 2xx with data that fulfills ALL parts of the intent = SUCCESS
-- Status 4xx/5xx or curl error = FAILURE
-- Status 2xx but data doesn't match intent expectations = FAILURE
+**Response Body:** {response_body}
 
-**OUTPUT FORMAT:**
-Return ONLY a JSON object with your specific analysis.
+**Error (if any):** {stderr if stderr else "None"}
 
-Example SUCCESS:
-{{"success": true, "reason": "Activity 5 retrieved with title 'Activity 5' matching expected value"}}
+**Your Task:**
+1. Check if the API request was successful (2xx status)
+2. Check if the response data fulfills the user's intent
+3. For verification intents ("verify", "check", "confirm"), validate the actual data matches expectations
 
-Example FAILURE:
-{{"success": false, "reason": "Response has title 'Activity 5' but intent expected 'Activity 10'"}}
+**Rules:**
+- Status 2xx with data matching the intent = success: true
+- Status 4xx/5xx or error = success: false
+- Status 2xx but data doesn't match intent = success: false
 
-Your JSON analysis:"""
+**Response Format (JSON only):**
+{{"success": true/false, "reason": "Your analysis of the response"}}"""
 
 
 def get_curl_retry_prompt(
@@ -643,7 +632,7 @@ def get_api_endpoint_retry_prompt(
 ) -> str:
     """
     Generate ENHANCED retry prompt with AI analysis and all original context.
-    
+
     This prompt includes:
     - AI analysis from first attempt (why it failed)
     - Original stored_metadata from learning database
@@ -660,14 +649,14 @@ def get_api_endpoint_retry_prompt(
         swagger_context: API documentation for reference
         base_url: Base URL for the API
     """
-    
+
     # Build stored metadata section
     stored_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📚 **ORIGINAL STORED ACTION FROM LEARNING DATABASE**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if stored_metadata:
         stored_section += f"""
         This action was used in the FIRST attempt and FAILED:
@@ -683,18 +672,18 @@ def get_api_endpoint_retry_prompt(
         stored_section += """
         No stored action was used (first attempt was generated from swagger).
         """
-    
+
     stored_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Build swagger context section
     swagger_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📖 **SWAGGER API DOCUMENTATION**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if swagger_context:
         swagger_section += f"""
         {swagger_context}
@@ -703,11 +692,11 @@ def get_api_endpoint_retry_prompt(
         swagger_section += """
         No swagger documentation available.
         """
-    
+
     swagger_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Build AI analysis section
     analysis_section = f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
@@ -911,7 +900,7 @@ def get_db_query_analysis_prompt(
     result: str,
 ) -> str:
     """
-    Generate prompt for GitLab Duo to analyze a SQL query execution result.
+    Generate prompt for analyzing a SQL query execution result.
 
     Args:
         intent: Original user intent
@@ -921,37 +910,27 @@ def get_db_query_analysis_prompt(
     Returns:
         str: Formatted prompt for query analysis
     """
-    # Truncate result if too long
-    result_preview = result[:1000] if result else "No results"
+    return f"""Analyze this database query result and determine if the intent was fulfilled.
 
-    return f"""Analyze this SQL query execution and determine if the INTENT was fulfilled.
+**User Intent:** {intent}
 
-Intent: {intent}
-Query: {query}
-Result: {result_preview}
+**SQL Query Executed:** {query}
 
-**CRITICAL RULES FOR VERIFICATION/CONFIRMATION INTENTS:**
-- If intent contains "verify", "check", "confirm", "ensure", "validate" that something EXISTS or IS TRUE:
-  - Empty result [] = FAILURE (the thing being verified does NOT exist or is NOT true)
-  - Non-empty result with matching data = SUCCESS (verification passed)
+**Query Result:** {result}
 
-**GENERAL RULES:**
-- Query executed without error AND returned data that matches intent = SUCCESS
-- Query had syntax error or execution error = FAILURE  
-- Query returned data but doesn't match intent = FAILURE
-- For "get all" or "list" intents, empty [] is acceptable (no data exists)
-- For "verify/check/confirm" intents, empty [] means verification FAILED
+**Your Task:**
+1. Look at the actual data returned in the Query Result
+2. Determine if this result fulfills what the user asked for in the Intent
+3. Return your analysis as JSON
 
-**OUTPUT FORMAT:**
-Return ONLY a JSON object with "success" (boolean) and "reason" (string with YOUR specific analysis).
+**Rules:**
+- If the result contains data matching the intent = success: true
+- If the result is empty [] but user wanted to verify/find something = success: false
+- If there's an error in the result = success: false
+- For "list all" or "get all" intents, empty [] is acceptable
 
-Example SUCCESS response:
-{{"success": true, "reason": "Query returned 1 row showing user John has admin role as expected"}}
-
-Example FAILURE response:
-{{"success": false, "reason": "Query returned 0 rows - no agent named Reumaysa has yahoo email domain"}}
-
-Your JSON analysis:"""
+**Response Format (JSON only):**
+{{"success": true/false, "reason": "Your analysis of what was found or not found"}}"""
 
 
 def get_db_query_retry_prompt(
@@ -1031,28 +1010,28 @@ def get_db_query_action_prompt(
 ) -> str:
     """
     Generate prompt for DUO to produce DB query action metadata.
-    
+
     This prompt follows the same unified pattern as UI and API:
     - ALWAYS includes BOTH stored_metadata AND schema_context sections
     - If data missing, shows "No data found" message in that section
-    
+
     Args:
         table: The database table name (e.g., "agents", "users", "orders")
         intent: User's intent describing what database action to perform
         schema_context: Schema specification context for this table (optional)
         stored_metadata: Previously stored action metadata from learning collection (optional)
-        
+
     Returns:
         Formatted prompt string for DUO
     """
-    
+
     # Build stored metadata section - ALWAYS present
     stored_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📚 **STORED ACTION FROM LEARNING DATABASE**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if stored_metadata:
         stored_section += f"""
         ✅ A similar query was previously executed. Use as reference:
@@ -1071,18 +1050,18 @@ def get_db_query_action_prompt(
         This is the FIRST TIME this query is being generated.
         Use schema context to generate the query from scratch.
         """
-    
+
     stored_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Build schema context section - ALWAYS present
     schema_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📖 **DATABASE SCHEMA CONTEXT**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if schema_context and schema_context.strip():
         schema_section += f"""
         {schema_context}
@@ -1092,11 +1071,11 @@ def get_db_query_action_prompt(
         ⚠️ No schema context available.
         Generate query based on standard MySQL conventions and table name.
         """
-    
+
     schema_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     return f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
         🎯 **DATABASE QUERY ACTION GENERATOR** - Generate SQL Query Metadata
@@ -1226,7 +1205,7 @@ def get_db_query_retry_prompt_enhanced(
 ) -> str:
     """
     Generate ENHANCED retry prompt with AI analysis and all original context.
-    
+
     This prompt includes:
     - AI analysis from first attempt (why it failed)
     - Original stored_metadata from learning database
@@ -1242,14 +1221,14 @@ def get_db_query_retry_prompt_enhanced(
         stored_metadata: Original stored action from learning database
         schema_context: Database schema for reference
     """
-    
+
     # Build stored metadata section
     stored_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📚 **ORIGINAL STORED ACTION FROM LEARNING DATABASE**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if stored_metadata:
         stored_section += f"""
         This action was used in the FIRST attempt and FAILED:
@@ -1264,18 +1243,18 @@ def get_db_query_retry_prompt_enhanced(
         stored_section += """
         No stored action was used (first attempt was generated from schema).
         """
-    
+
     stored_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Build schema context section
     schema_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📖 **DATABASE SCHEMA CONTEXT**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if schema_context:
         schema_section += f"""
         {schema_context}
@@ -1284,11 +1263,11 @@ def get_db_query_retry_prompt_enhanced(
         schema_section += """
         No schema documentation available.
         """
-    
+
     schema_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Build AI analysis section
     analysis_section = f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
@@ -1445,14 +1424,30 @@ def get_ui_step_action_prompt(
            - Extract option value from intent
            - Return: {{"action": "select", "locator": "#select-selector", "value": "option"}}
 
-        5️⃣ **VERIFY ACTION** (keywords: verify, assert, check, see, should, displayed, visible)
+        5️⃣ **VERIFY ACTION** (keywords: verify, assert, check, see, should, displayed, visible, equals, is, be)
            - Determine what to verify from intent
            - ⚠️ CRITICAL: Use the EXACT text from the intent - DO NOT correct typos or spelling!
            - If intent says "Header should be Swag lamb", use "Swag lamb" NOT "Swag Labs"
-           - Return: {{"action": "verify", "checks": [
+           
+           **VERIFICATION TYPES:**
+           - For "should be X" / "equals X" / "is X" → Use "text_equals" to compare element text with expected value
+           - For "should contain X" → Use "text_contains" to check if text contains expected value
+           - For "should see X" / "X visible" → Use "text_visible" to check if text is visible on page
+           - For element visibility → Use "element_visible" to check if element is visible
+           - For URL checks → Use "url_contains" to check URL
+           
+           **EXAMPLES:**
+           - "Header should be Swag Labs" → {{"action": "verify", "checks": [{{"type": "text_equals", "locator": ".header", "expected_text": "Swag Labs"}}]}}
+           - "Title should contain Login" → {{"action": "verify", "checks": [{{"type": "text_contains", "locator": "h1", "expected_text": "Login"}}]}}
+           - "I should see Welcome" → {{"action": "verify", "checks": [{{"type": "text_visible", "text": "Welcome"}}]}}
+           - "Login button visible" → {{"action": "verify", "checks": [{{"type": "element_visible", "locator": "#login-btn"}}]}}
+           
+           Return: {{"action": "verify", "checks": [
                {{"type": "element_visible", "locator": "#element"}},
                {{"type": "url_contains", "value": "expected-url-part"}},
-               {{"type": "text_visible", "text": "EXACT text from intent - no corrections"}}
+               {{"type": "text_visible", "text": "EXACT text from intent - no corrections"}},
+               {{"type": "text_equals", "locator": "#element", "expected_text": "EXACT expected text"}},
+               {{"type": "text_contains", "locator": "#element", "expected_text": "text to find"}}
            ]}}
 
         6️⃣ **WAIT ACTION** (keywords: wait, pause)
@@ -1653,7 +1648,7 @@ def get_ui_module_retry_prompt(
 ) -> str:
     """
     Generate ENHANCED retry prompt with AI analysis and all original context.
-    
+
     This prompt includes:
     - AI analysis from first attempt (why it failed)
     - Original stored_metadata from learning database
@@ -1676,27 +1671,28 @@ def get_ui_module_retry_prompt(
     elements_str = "\n".join(
         [f"  {i+1}. {elem[:400]}" for i, elem in enumerate(relevant_elements[:15])]
     )
-    
+
     previous_steps_str = ""
     if previous_steps:
         previous_steps_str = "\n".join([f"  - {s}" for s in previous_steps[-5:]])
-    
+
     # Build stored metadata section
     stored_section = """
         ═══════════════════════════════════════════════════════════════════════════════════════
         📚 **ORIGINAL STORED ACTION FROM LEARNING DATABASE**:
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if stored_metadata:
-        action_json = stored_metadata.get('action_json', {})
+        action_json = stored_metadata.get("action_json", {})
         if isinstance(action_json, str):
             try:
                 import json
+
                 action_json = json.loads(action_json)
             except:
                 action_json = {}
-        
+
         stored_section += f"""
         This action was used in the FIRST attempt and FAILED:
         
@@ -1711,11 +1707,11 @@ def get_ui_module_retry_prompt(
         stored_section += """
         No stored action was used (first attempt was with live HTML).
         """
-    
+
     stored_section += """
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Build AI analysis section
     analysis_section = f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
@@ -1826,7 +1822,7 @@ def get_ui_step_failure_analysis_prompt(
     previous_steps: list = None,
 ) -> str:
     """
-    Generate prompt for GitLab Duo to analyze why a step failed.
+    Generate prompt for analyzing why a UI step failed.
 
     Args:
         step_intent: The step text that failed
@@ -1839,88 +1835,56 @@ def get_ui_step_failure_analysis_prompt(
         previous_steps: List of previously executed steps
     """
 
-    elements_str = "\n".join(
-        [f"  {i+1}. {elem[:400]}" for i, elem in enumerate(relevant_elements[:15])]
+    elements_str = (
+        "\n".join([f"  - {elem[:300]}" for elem in relevant_elements[:10]])
+        if relevant_elements
+        else "No elements found"
     )
 
-    previous_context = ""
+    prev_context = ""
     if previous_steps:
-        prev_str = "\n".join(
+        prev_context = "\n".join(
             [
                 f"  - [{s.get('step_type', '')}] {s.get('intent', '')}: {s.get('status', 'pending')}"
-                for s in previous_steps
-            ]
+                for s in previous_steps[-5:]
+            ]  # Last 5 steps only
         )
-        previous_context = f"\n## All Previous Steps\n{prev_str}\n"
 
-    return f"""
-        Your expertise: QA failure analysis, debugging, and root cause identification.
+    return f"""Analyze why this UI test step failed and provide insights.
 
-        📋 **MISSION**: Analyze why this UI test step failed and provide a detailed explanation.
+**Failed Step:**
+- Type: {step_type}
+- Intent: {step_intent}
 
-        📥 **FAILURE CONTEXT**
-        ═══════════════════════════════════════════════════════════════════════════════════════
+**Action Attempted:** {failed_action}
 
-        🔴 FAILED STEP:
-        Type: {step_type}
-        Intent: {step_intent}
+**Error:** {error}
 
-        🎯 ACTION ATTEMPTED:
-        {failed_action}
+**Page State:**
+- URL: {page_url}
+- Title: {page_title}
 
-        ❌ ERROR MESSAGE:
-        {error}
-        {previous_context}
-        🌐 CURRENT PAGE STATE:
-        URL: {page_url}
-        Title: {page_title}
+**Available Elements on Page:**
+{elements_str}
 
-        📄 PAGE ELEMENTS (relevant to the intent):
-        {elements_str}
+**Previous Steps:**
+{prev_context if prev_context else "None"}
 
-        ═══════════════════════════════════════════════════════════════════════════════════════
+**Your Task:**
+Analyze the failure and determine:
+1. Why did it fail? (element not found, wrong state, timing issue, etc.)
+2. What was expected vs what was found?
+3. Is this a test issue or application issue?
 
-        ⚡ **ANALYSIS REQUIRED** ⚡
-        ═══════════════════════════════════════════════════════════════════════════════════════
-
-        Please analyze and provide:
-
-        1️⃣ **ROOT CAUSE**: What is the most likely reason for the failure?
-           - Element not found on page?
-           - Element found but not matching expected state?
-           - Wrong locator generated?
-           - Page not in expected state?
-           - Timing/loading issue?
-           - Test data mismatch?
-
-        2️⃣ **EVIDENCE**: What evidence from the page elements supports your analysis?
-           - Compare expected vs actual elements on page
-           - Note any discrepancies
-
-        3️⃣ **EXPECTED VS ACTUAL**:
-           - What did the test expect to find/verify?
-           - What is actually on the page?
-
-        4️⃣ **RECOMMENDATION**: How could this be fixed?
-           - Is this a test bug or application bug?
-           - Suggested fix
-
-        🚨 **OUTPUT FORMAT** 🚨
-        ═══════════════════════════════════════════════════════════════════════════════════════
-
-        Return a JSON object with the following structure:
-        {{
-            "root_cause": "Brief description of why it failed",
-            "failure_type": "element_not_found|wrong_state|data_mismatch|timing|test_bug|app_bug",
-            "expected": "What the test expected",
-            "actual": "What was actually found on the page",
-            "evidence": ["Evidence point 1", "Evidence point 2"],
-            "recommendation": "How to fix this issue",
-            "is_test_issue": true/false
-        }}
-
-        ═══════════════════════════════════════════════════════════════════════════════════════
-        """
+**Response Format (JSON only):**
+{{
+    "root_cause": "Brief description of why it failed",
+    "failure_type": "element_not_found|wrong_state|data_mismatch|timing|test_bug|app_bug",
+    "expected": "What the test expected",
+    "actual": "What was found on the page",
+    "recommendation": "How to fix this",
+    "is_test_issue": true/false
+}}"""
 
 
 # =============================================================================
@@ -1939,12 +1903,12 @@ def get_ui_module_action_prompt(
 ) -> str:
     """
     Generate prompt for GitLab Duo to decide on action and return FULL METADATA dict.
-    
+
     IMPORTANT: Both sections (STORED METADATA and LIVE HTML ELEMENTS) are ALWAYS included
     in the prompt. The data inside depends on availability:
     - stored_metadata: Shows data if [correct] action found, otherwise "No stored action found"
     - relevant_elements: Shows data if retrieved, otherwise "No elements retrieved"
-    
+
     DUO must return the SAME metadata format that will be stored:
     {
         "action_key": "click_login",
@@ -1954,7 +1918,7 @@ def get_ui_module_action_prompt(
         "action_json": {...},
         "playwright_code": "page.click('#login-btn')"
     }
-    
+
     Args:
         step_intent: The step text (e.g., "fill username with standard_user")
         step_type: Given/When/Then/And
@@ -1964,7 +1928,7 @@ def get_ui_module_action_prompt(
         relevant_elements: Fresh HTML elements from IntentLocatorLibrary (optional)
         previous_steps: List of previously executed steps for context
     """
-    
+
     # ====== SECTION 1: STORED METADATA (ALWAYS PRESENT) ======
     if stored_metadata:
         stored_context = f"""
@@ -1992,11 +1956,14 @@ def get_ui_module_action_prompt(
         This is a NEW action that needs to be generated from the live HTML elements below.
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # ====== SECTION 2: LIVE HTML ELEMENTS (ALWAYS PRESENT) ======
     if relevant_elements and len(relevant_elements) > 0:
         elements_str = "\n".join(
-            [f"        {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:10])]
+            [
+                f"        {i+1}. {elem[:300]}"
+                for i, elem in enumerate(relevant_elements[:10])
+            ]
         )
         elements_context = f"""
         🎯 LIVE HTML ELEMENTS FROM CURRENT PAGE:
@@ -2017,7 +1984,7 @@ def get_ui_module_action_prompt(
         If no stored action, this may be a navigation or special action type.
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     # Format previous steps context
     previous_context = ""
     if previous_steps:
@@ -2186,29 +2153,29 @@ def get_api_endpoint_action_prompt(
     intent: str,
     swagger_context: str = "",
     stored_metadata: dict = None,
-    base_url: str = ""
+    base_url: str = "",
 ) -> str:
     """
     Generate prompt for DUO to produce API endpoint action metadata.
-    
+
     This prompt follows the same pattern as UI module action prompt:
     - If stored_metadata provided: DUO validates/updates the stored action
     - If swagger_context provided: DUO generates new action from swagger
-    
+
     Args:
         resource: The API resource name (e.g., "users", "login", "products")
         intent: User's intent describing what API action to perform
         swagger_context: Swagger specification context for this endpoint (optional)
         stored_metadata: Previously stored action metadata from learning collection (optional)
         base_url: Base URL for the API
-        
+
     Returns:
         Formatted prompt string for DUO
     """
-    
+
     # Build context section
     context_section = ""
-    
+
     if stored_metadata:
         context_section = f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
@@ -2228,7 +2195,7 @@ def get_api_endpoint_action_prompt(
         
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     if swagger_context:
         context_section += f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
@@ -2239,7 +2206,7 @@ def get_api_endpoint_action_prompt(
         
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
-    
+
     return f"""
         ═══════════════════════════════════════════════════════════════════════════════════════
         🎯 **API ENDPOINT ACTION GENERATOR** - Generate API Request Metadata

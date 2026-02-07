@@ -25,6 +25,7 @@
 - [Configuration](#-configuration)
 - [Running Tests](#-running-tests)
 - [Test Examples](#-test-examples)
+- [New in v2.0: Built-in Assertions & Verification Intents](#-new-in-v20-built-in-assertions--verification-intents)
 - [Module Documentation](#-module-documentation)
 - [Troubleshooting](#-troubleshooting)
 - [Contributing](#-contributing)
@@ -63,26 +64,23 @@ The **AI-Augmented E2E Testing Framework** revolutionizes traditional test autom
                                     ▼ ▼ ▼
 
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         AI-AUGMENTED APPROACH                                    │
+│                         AI-AUGMENTED APPROACH (v2.0)                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
-│  UI Test:                                                                        │
-│    result = ui_page.execute_by_intent(                                          │
+│  UI Test (with built-in assertions):                                            │
+│    ui_page.execute_by_intent(                                                   │
 │        intent="Given I login with standard_user and secret_sauce"               │
-│    )                                                                             │
-│    assert result["success"]                                                      │
+│    )  # Auto-raises AssertionError on failure!                                  │
 │                                                                                  │
-│  API Test:                                                                       │
-│    result = api_wrapper.execute_by_intent(                                      │
-│        intent="get book with id 1"                                              │
-│    )                                                                             │
-│    assert result["success"]                                                      │
+│  API Test (with verification):                                                  │
+│    api_wrapper.execute_by_intent(                                               │
+│        intent="Get book with id 1 and verify title is 'Hello World'"            │
+│    )  # AI validates response data against expected values!                     │
 │                                                                                  │
-│  DB Test:                                                                        │
-│    result = db_context.execute_by_intent(                                       │
-│        intent="get agent with id 5"                                             │
-│    )                                                                             │
-│    assert result["success"]                                                      │
+│  DB Test (with verification):                                                   │
+│    db_context.execute_by_intent(                                                │
+│        intent="verify that John is one of the agents"                           │
+│    )  # Empty result = FAILURE for verification intents!                        │
 │                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -98,10 +96,12 @@ The **AI-Augmented E2E Testing Framework** revolutionizes traditional test autom
 | 🔍 **RAG-Powered Context**       | ChromaDB + Ollama embeddings for smart context retrieval      |
 | 🔄 **Self-Healing Selectors**    | Auto-repair broken UI locators with AI                        |
 | 📡 **Network Interception**      | Capture and validate API calls during UI flows                |
-| 🎯 **Semantic Element Matching** | TF-IDF vectorization for intelligent element finding          |
+| 🎯 **TF-IDF Extraction**         | Extract resources/tables from intent using TF-IDF matching    |
 | 📚 **Learning System**           | Store successful/failed executions for continuous improvement |
+| ✅ **Built-in Assertions**       | `assert_success` parameter auto-raises `AssertionError`       |
+| 🔎 **Verification Intents**      | AI validates response data against expected values in intent  |
 | 📊 **Comprehensive Logging**     | Beautiful step-by-step logs with full traceability            |
-| 🧪 **Multi-Layer Testing**       | UI, API, and Database testing in one framework                |
+| 🧪 **Multi-Layer Testing**       | UI, API, and Database testing in one unified framework        |
 
 ---
 
@@ -549,7 +549,7 @@ pytest --html=reports/report.html --self-contained-html -v
 
 ```python
 """
-UI Test with Intent-Based Execution
+UI Test with Intent-Based Execution (v2.0 - Built-in Assertions)
 """
 import pytest
 
@@ -558,38 +558,43 @@ class TestLoginSelfHealing:
     @pytest.mark.id("UI-001")
     @pytest.mark.title("Login Flow - Standard User")
     def test_login_flow(self, ui_page, ui_context):
-        result = ui_page.execute_by_intent(
+        # No manual assertion needed - auto-raises AssertionError on failure!
+        ui_page.execute_by_intent(
             intent="""
+            Given navigate to saucedemo.base_url page
             Given I am on the login page
             When I fill username with standard_user
             And I fill password with secret_sauce
             And I click login button
             Then I should see the inventory page
+            Then Header should be Products
             """,
             rag_context=ui_context,
         )
-        
-        assert result["success"] is True, f"Login failed: {result.get('error')}"
 
-    @pytest.mark.id("UI-NET-001")
-    @pytest.mark.title("Validate API During UI Flow")
-    def test_network_validation(self, ui_page, ui_context):
+    @pytest.mark.id("UI-002")
+    @pytest.mark.title("Negative Test - Expected Failure")
+    def test_login_invalid_user(self, ui_page, ui_context):
+        # For negative tests, use assert_success=False
         result = ui_page.execute_by_intent(
             intent="""
-            Given navigate to swagger.base_url page
-            And Check network requests for api call to '**/swagger*' with status 200
+            Given I am on the login page
+            When I fill username with invalid_user
+            And I click login button
+            Then I should see error message
             """,
             rag_context=ui_context,
+            assert_success=False,  # Don't auto-assert
         )
-        
-        assert result["success"] is True
+        # Manual assertion for expected failure
+        assert "error" in result.get("error", "").lower()
 ```
 
 ### API Test Example
 
 ```python
 """
-API Test with Intent-Based Execution
+API Test with Intent-Based Execution (v2.0 - Verification Intents)
 """
 import pytest
 
@@ -599,29 +604,35 @@ class TestIntentBasedAPI:
     @pytest.mark.id("API-001")
     @pytest.mark.title("Get Book by ID")
     def test_get_book_by_id(self, api_wrapper):
-        result = api_wrapper.execute_by_intent(
-            intent="get book with id 1"
-        )
-        
-        assert result["success"], f"AI Analysis Failed: {result.get('reason')}"
-        assert result["status_code"] == 200
+        # No manual assertion needed!
+        api_wrapper.execute_by_intent(intent="get book with id 1")
 
     @pytest.mark.api_intent
     @pytest.mark.id("API-002")
-    @pytest.mark.title("Create New User")
-    def test_create_user(self, api_wrapper):
-        result = api_wrapper.execute_by_intent(
-            intent="create a new user with name John and email john@test.com"
+    @pytest.mark.title("Verify Activity Title")
+    def test_verify_activity_title(self, api_wrapper):
+        # AI will verify the response data matches expected value
+        api_wrapper.execute_by_intent(
+            intent="Get Activity with ID 5 and verify that its title is Activity 5"
         )
-        
-        assert result["success"]
+        # FAILS if title is different (e.g., "Activity 10")
+
+    @pytest.mark.api_intent
+    @pytest.mark.id("API-003")
+    @pytest.mark.title("Negative Test - 404 Expected")
+    def test_get_nonexistent_book(self, api_wrapper):
+        result = api_wrapper.execute_by_intent(
+            intent="get book with id 99999",
+            assert_success=False  # Don't auto-assert
+        )
+        assert result["status_code"] == 404
 ```
 
 ### Database Test Example
 
 ```python
 """
-Database Test with Intent-Based Execution
+Database Test with Intent-Based Execution (v2.0 - Verification Intents)
 """
 import pytest
 
@@ -629,25 +640,81 @@ class TestDBIntentExecution:
     
     @pytest.mark.db_intent
     @pytest.mark.id("DB-001")
-    @pytest.mark.title("Verify Agents Table")
+    @pytest.mark.title("Get All Agents")
     def test_get_all_agents(self, db_context):
-        result = db_context.execute_by_intent(
-            intent="get all agents from the database"
-        )
-        
-        assert result["success"], f"AI Analysis Failed: {result.get('reason')}"
-        assert len(result["data"]) > 0
+        # No manual assertion needed!
+        db_context.execute_by_intent(intent="get all agents from the database")
 
     @pytest.mark.db_intent
     @pytest.mark.id("DB-002")
-    @pytest.mark.title("Get Agent by ID")
-    def test_get_agent_by_id(self, db_context):
-        result = db_context.execute_by_intent(
-            intent="get agent with id 5"
+    @pytest.mark.title("Verify Agent Exists")
+    def test_verify_agent_exists(self, db_context):
+        # For verification intents, empty result = FAILURE
+        db_context.execute_by_intent(
+            intent="verify that Rowen is one of the agents at Emirates"
         )
-        
-        assert result["success"]
+        # FAILS if no agent named Rowen found
+
+    @pytest.mark.db_intent
+    @pytest.mark.id("DB-003")
+    @pytest.mark.title("Verify Agent Email Domain")
+    def test_verify_agent_email_domain(self, db_context):
+        db_context.execute_by_intent(
+            intent="verify that Reumaysa email domain is yahoo"
+        )
+        # FAILS if Reumaysa's email is not @yahoo.com
+
+    @pytest.mark.db_intent
+    @pytest.mark.id("DB-004")
+    @pytest.mark.title("Negative Test - Agent Should Not Exist")
+    def test_nonexistent_agent(self, db_context):
+        result = db_context.execute_by_intent(
+            intent="verify that NonExistentUser is one of the agents",
+            assert_success=False  # Don't auto-assert
+        )
+        assert result["success"] == False
 ```
+
+---
+
+## 🆕 New in v2.0: Built-in Assertions & Verification Intents
+
+### Built-in Assertions (`assert_success` Parameter)
+
+All `execute_by_intent()` methods now include a built-in assertion mechanism that automatically raises `AssertionError` on failure:
+
+| Layer   | Method                                                                | Default     |
+| ------- | --------------------------------------------------------------------- | ----------- |
+| **UI**  | `ui_page.execute_by_intent(intent, rag_context, assert_success=True)` | Auto-assert |
+| **API** | `api_wrapper.execute_by_intent(intent, assert_success=True)`          | Auto-assert |
+| **DB**  | `db_context.execute_by_intent(intent, assert_success=True)`           | Auto-assert |
+
+**Benefits:**
+- ✅ Cleaner test code - no manual `assert` statements needed
+- ✅ Consistent assertion messages across all layers
+- ✅ Negative testing support with `assert_success=False`
+
+### Verification Intents
+
+The AI now understands **verification intents** that check specific data values:
+
+```python
+# API: Verify response data matches expected value
+api_wrapper.execute_by_intent(
+    intent="Get Activity with ID 5 and verify that its title is Activity 5"
+)
+# AI checks: response.title == "Activity 5" → SUCCESS or FAILURE
+
+# DB: Verify condition is true
+db_context.execute_by_intent(
+    intent="verify that Reumaysa email domain is yahoo"
+)
+# Query: SELECT email FROM agents WHERE name = 'Reumaysa' AND email LIKE '%@yahoo%'
+# Result: [] (empty) → FAILURE (verification failed)
+# Result: [{"email": "reumaysa@yahoo.com"}] → SUCCESS
+```
+
+**Verification Keywords:** `verify`, `check`, `confirm`, `ensure`, `validate`, `make sure`
 
 ---
 

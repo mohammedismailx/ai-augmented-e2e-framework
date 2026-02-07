@@ -5,7 +5,7 @@
 | Field              | Value                                                 |
 | ------------------ | ----------------------------------------------------- |
 | **Document Title** | AI-Augmented E2E Framework - UI Testing Module Design |
-| **Version**        | 1.0.0                                                 |
+| **Version**        | 2.0.0                                                 |
 | **Last Updated**   | February 7, 2026                                      |
 | **Author**         | Framework Team                                        |
 | **Status**         | Production Ready                                      |
@@ -70,6 +70,8 @@ AI-Augmented:       Intent: "Given I am on the login page
 | **Network Interception**           | Capture and validate API calls during UI flows                          |
 | **Comprehensive Failure Analysis** | AI-powered root cause analysis for failed steps                         |
 | **RAG-Based Learning**             | Store successful executions for future intent matching                  |
+| **Built-in Assertions**            | `assert_success` parameter auto-raises `AssertionError` on failure      |
+| **Module-Based Storage**           | Actions stored by URL module (e.g., `/inventory` → "inventory")         |
 
 ---
 
@@ -170,11 +172,63 @@ class BasePage:
         self._network_listener_active = False
     
     # Key Methods
-    def execute_by_intent(intent: str, rag_context=None) -> dict
+    def execute_by_intent(
+        intent: str, 
+        rag_context=None, 
+        assert_success: bool = True  # NEW: Built-in assertions
+    ) -> dict
     def start_network_capture(url_pattern: str = "**/*")
     def validate_api_called(url_pattern, method, expected_status, ...)
     def _resolve_url(page_ref: str) -> str
     def _execute_action(action: dict, logger) -> bool
+```
+
+#### 3.2.1 Built-in Assertions (`assert_success` Parameter)
+
+The `execute_by_intent` function now includes a built-in assertion mechanism:
+
+```python
+def execute_by_intent(self, intent: str, rag_context=None, assert_success: bool = True) -> dict:
+    """
+    Args:
+        intent: Multi-line Gherkin steps
+        rag_context: RAG instance for learning storage
+        assert_success (bool): If True, raises AssertionError when any step fails.
+                               Set to False for negative testing scenarios.
+    
+    Raises:
+        AssertionError: If assert_success=True and any step fails
+    """
+```
+
+**Usage Examples:**
+
+```python
+# Normal test - auto-raises AssertionError on failure (no manual assert needed)
+def test_login_success(self, ui_page, ui_context):
+    ui_page.execute_by_intent(
+        intent="""
+        Given I am on the login page
+        When I fill username with standard_user
+        And I click login button
+        Then I should see the inventory page
+        """,
+        rag_context=ui_context,
+    )  # Automatically fails test if any step fails
+
+# Negative test - no assertion, returns result for inspection
+def test_login_failure_expected(self, ui_page, ui_context):
+    result = ui_page.execute_by_intent(
+        intent="""
+        Given I am on the login page  
+        When I fill username with invalid_user
+        And I click login button
+        Then I should see error message
+        """,
+        rag_context=ui_context,
+        assert_success=False,  # Don't auto-assert
+    )
+    assert result["success"] == False  # Manual assertion for negative test
 ```
 
 ### 3.3 IntentLocatorLibrary - Semantic Element Matching

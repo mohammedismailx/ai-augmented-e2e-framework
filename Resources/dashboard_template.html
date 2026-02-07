@@ -1,0 +1,2150 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Natural Language Automation Framework</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #2d3748;
+            --primary-dark: #1a202c;
+            --accent: #4a5568;
+            --success: #38a169;
+            --success-light: #c6f6d5;
+            --danger: #e53e3e;
+            --danger-light: #fed7d7;
+            --warning: #d69e2e;
+            --warning-light: #fefcbf;
+            --gray-50: #f7fafc;
+            --gray-100: #edf2f7;
+            --gray-200: #e2e8f0;
+            --gray-300: #cbd5e0;
+            --gray-400: #a0aec0;
+            --gray-500: #718096;
+            --gray-600: #4a5568;
+            --gray-700: #2d3748;
+            --gray-800: #1a202c;
+            --gray-900: #171923;
+            --ui-color: #2b6cb0;
+            --api-color: #276749;
+            --db-color: #553c9a;
+            --white: #ffffff;
+            --border: #e2e8f0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-100);
+            min-height: 100vh;
+            color: var(--gray-800);
+        }
+
+        .container {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* Header */
+        .header {
+            background: var(--gray-800);
+            padding: 0 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            border-bottom: 1px solid var(--gray-700);
+        }
+
+        .header-inner {
+            max-width: 1440px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 64px;
+        }
+
+        .header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--white);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            letter-spacing: -0.025em;
+            margin-top: 8px;
+        }
+
+        .header h1 i {
+            color: var(--gray-400);
+            font-size: 1.1rem;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        /* Module Tabs */
+        .module-tabs-wrapper {
+            background: var(--white);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+
+        .module-tabs {
+            max-width: 1440px;
+            margin: 0 auto;
+            display: flex;
+            gap: 0;
+        }
+
+        .module-tab {
+            padding: 16px 32px;
+            border: none;
+            background: transparent;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--gray-500);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+
+        .module-tab:hover {
+            color: var(--gray-700);
+            background: var(--gray-50);
+        }
+
+        .module-tab.active {
+            color: var(--gray-800);
+            border-bottom-color: var(--gray-800);
+            font-weight: 600;
+        }
+
+        .module-tab[data-module="ui"] .tab-icon {
+            color: var(--ui-color);
+        }
+
+        .module-tab[data-module="api"] .tab-icon {
+            color: var(--api-color);
+        }
+
+        .module-tab[data-module="db"] .tab-icon {
+            color: var(--db-color);
+        }
+
+        /* Main Content */
+        .main-wrapper {
+            padding: 24px;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 420px;
+            gap: 24px;
+            max-width: 1440px;
+            margin: 0 auto;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--white);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--gray-50);
+        }
+
+        .card-header h2 {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--gray-700);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .card-body {
+            padding: 16px;
+            max-height: 520px;
+            overflow-y: auto;
+        }
+
+        /* Intent List */
+        .intent-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .intent-row {
+            display: grid;
+            grid-template-columns: 36px 1fr auto auto;
+            gap: 12px;
+            align-items: start;
+            padding: 12px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            transition: all 0.15s ease;
+            cursor: pointer;
+        }
+
+        .intent-row:hover {
+            border-color: var(--gray-400);
+            background: var(--gray-50);
+        }
+
+        .intent-row.selected {
+            border-color: var(--gray-700);
+            background: var(--gray-50);
+        }
+
+        .intent-row.passed {
+            background: var(--success-light);
+            border-color: var(--success);
+        }
+
+        .intent-row.failed {
+            background: var(--danger-light);
+            border-color: var(--danger);
+        }
+
+        .intent-row.running {
+            background: var(--warning-light);
+            border-color: var(--warning);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.8;
+            }
+        }
+
+        .row-number {
+            width: 28px;
+            height: 28px;
+            background: var(--gray-200);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            color: var(--gray-600);
+            font-size: 0.75rem;
+        }
+
+        .intent-row.passed .row-number {
+            background: var(--success);
+            color: white;
+        }
+
+        .intent-row.failed .row-number {
+            background: var(--danger);
+            color: white;
+        }
+
+        .intent-input {
+            width: 100%;
+            min-height: 40px;
+            max-height: 200px;
+            padding: 10px 12px;
+            border: 1px solid var(--gray-300);
+            border-radius: 4px;
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            resize: none;
+            overflow-y: hidden;
+            transition: border-color 0.15s;
+            background: var(--white);
+        }
+
+        .intent-input:focus {
+            outline: none;
+            border-color: var(--gray-700);
+            box-shadow: 0 0 0 3px rgba(45, 55, 72, 0.1);
+        }
+
+        .status-badge {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+
+        .status-badge.pending {
+            background: var(--gray-200);
+            color: var(--gray-600);
+        }
+
+        .status-badge.running {
+            background: var(--warning);
+            color: white;
+        }
+
+        .status-badge.passed {
+            background: var(--success);
+            color: white;
+        }
+
+        .status-badge.failed {
+            background: var(--danger);
+            color: white;
+        }
+
+        .row-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn-primary {
+            background: var(--gray-800);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--gray-900);
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-icon {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            background: var(--gray-100);
+            color: var(--gray-600);
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-icon:hover {
+            background: var(--gray-200);
+            border-color: var(--gray-300);
+        }
+
+        .btn-icon.btn-run {
+            background: var(--success);
+            color: white;
+            border-color: var(--success);
+        }
+
+        .btn-icon.btn-run:hover {
+            background: #2f855a;
+        }
+
+        /* Run button turns red when test failed */
+        .intent-row.failed .btn-icon.btn-run {
+            background: var(--danger);
+            border-color: var(--danger);
+        }
+
+        .intent-row.failed .btn-icon.btn-run:hover {
+            background: #c53030;
+        }
+
+        .btn-icon.btn-delete {
+            background: var(--white);
+            color: var(--gray-500);
+            border-color: var(--border);
+        }
+
+        .btn-icon.btn-delete:hover {
+            background: var(--danger-light);
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+
+        /* Add Intent Button */
+        .add-intent-btn {
+            width: 100%;
+            padding: 12px;
+            border: 1px dashed var(--gray-300);
+            border-radius: 4px;
+            background: transparent;
+            color: var(--gray-500);
+            font-size: 0.8125rem;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .add-intent-btn:hover {
+            border-color: var(--gray-500);
+            color: var(--gray-700);
+            background: var(--gray-50);
+        }
+
+        /* Analysis Panel */
+        .analysis-panel {
+            position: sticky;
+            top: 88px;
+        }
+
+        .analysis-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .analysis-content {
+            padding: 16px;
+        }
+
+        .analysis-placeholder {
+            text-align: center;
+            color: var(--gray-400);
+            padding: 48px 24px;
+        }
+
+        .analysis-placeholder i {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+            display: block;
+            color: var(--gray-300);
+        }
+
+        .analysis-placeholder p {
+            font-size: 0.875rem;
+        }
+
+        .analysis-section {
+            margin-bottom: 16px;
+        }
+
+        .analysis-section h4 {
+            color: var(--gray-500);
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 600;
+        }
+
+        .analysis-code {
+            background: var(--gray-900);
+            color: var(--gray-300);
+            padding: 12px;
+            border-radius: 4px;
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            font-size: 0.75rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            max-height: 280px;
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+
+        .analysis-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.75rem;
+        }
+
+        .analysis-status.passed {
+            background: var(--success-light);
+            color: var(--success);
+        }
+
+        .analysis-status.failed {
+            background: var(--danger-light);
+            color: var(--danger);
+        }
+
+        /* Verdict Section */
+        .verdict-section {
+            background: var(--gray-50);
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 16px;
+            border: 1px solid var(--border);
+        }
+
+        .verdict-box {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 16px;
+            border-radius: 6px;
+            border: 1px solid;
+            flex-wrap: wrap;
+            background: var(--white);
+        }
+
+        .verdict-box.passed {
+            background: var(--success-light);
+            border-color: var(--success);
+        }
+
+        .verdict-box.failed {
+            background: var(--danger-light);
+            border-color: var(--danger);
+        }
+
+        .verdict-icon {
+            font-size: 2.5rem;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 50px;
+            height: 50px;
+        }
+
+        .verdict-box.passed .verdict-icon {
+            color: var(--success);
+        }
+
+        .verdict-box.failed .verdict-icon {
+            color: var(--danger);
+        }
+
+        .verdict-text {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .verdict-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .verdict-box.passed .verdict-title {
+            color: var(--success);
+        }
+
+        .verdict-box.failed .verdict-title {
+            color: var(--danger);
+        }
+
+        .verdict-reason {
+            font-size: 1.05rem;
+            line-height: 1.7;
+            color: var(--gray-800);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            white-space: pre-wrap;
+            margin: 0;
+            padding: 0;
+        }
+
+        .verdict-details {
+            font-size: 0.9rem;
+            color: var(--gray-600);
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(0, 0, 0, 0.1);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 600px) {
+            .verdict-box {
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+            }
+
+            .verdict-icon {
+                margin-bottom: 10px;
+            }
+
+            .verdict-text {
+                min-width: 100%;
+            }
+        }
+
+        /* Step Progress List for UI Tests */
+        .step-progress-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .step-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--gray-100);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            border-left: 3px solid var(--gray-400);
+        }
+
+        .step-item.passed {
+            border-left-color: var(--success);
+            background: rgba(72, 187, 120, 0.08);
+        }
+
+        .step-item.failed {
+            border-left-color: var(--danger);
+            background: rgba(245, 101, 101, 0.08);
+        }
+
+        .step-number {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--gray-300);
+            color: var(--gray-700);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .step-item.passed .step-number {
+            background: var(--success);
+            color: white;
+        }
+
+        .step-item.failed .step-number {
+            background: var(--danger);
+            color: white;
+        }
+
+        .step-type {
+            color: var(--gray-500);
+            font-weight: 600;
+            font-size: 0.7rem;
+            min-width: 50px;
+        }
+
+        .step-intent {
+            flex: 1;
+            color: var(--gray-700);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .step-status {
+            flex-shrink: 0;
+        }
+
+        .step-status.passed {
+            color: var(--success);
+        }
+
+        .step-status.failed {
+            color: var(--danger);
+        }
+
+        /* Footer */
+        .footer-actions {
+            background: white;
+            border-radius: 16px;
+            padding: 20px 24px;
+            margin-top: 20px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .footer-stats {
+            display: flex;
+            gap: 24px;
+        }
+
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .stat-label {
+            color: var(--gray-500);
+            font-size: 0.85rem;
+        }
+
+        .stat.passed .stat-value {
+            color: var(--success);
+        }
+
+        .stat.failed .stat-value {
+            color: var(--danger);
+        }
+
+        .stat.pending .stat-value {
+            color: var(--gray-500);
+        }
+
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .loading-spinner {
+            background: white;
+            padding: 32px 48px;
+            border-radius: 16px;
+            text-align: center;
+        }
+
+        .loading-spinner i {
+            font-size: 3rem;
+            color: var(--primary);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .loading-spinner p {
+            margin-top: 16px;
+            color: var(--gray-600);
+            font-weight: 500;
+        }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1001;
+        }
+
+        .toast {
+            background: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            margin-top: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast.success {
+            border-left: 4px solid var(--success);
+        }
+
+        .toast.error {
+            border-left: 4px solid var(--danger);
+        }
+
+        .toast.info {
+            border-left: 4px solid var(--primary);
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray-400);
+        }
+
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        .empty-state h3 {
+            color: var(--gray-600);
+            margin-bottom: 8px;
+        }
+
+        /* Configuration Panel */
+        .config-panel {
+            background: white;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .config-panel.collapsed .config-body {
+            display: none;
+        }
+
+        .config-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .config-header h3 {
+            font-size: 1rem;
+            color: var(--gray-700);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .config-toggle {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--gray-500);
+            font-size: 1.2rem;
+            transition: transform 0.3s;
+        }
+
+        .config-panel.collapsed .config-toggle {
+            transform: rotate(-90deg);
+        }
+
+        .config-body {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--gray-200);
+        }
+
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .config-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .config-field label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--gray-600);
+        }
+
+        .config-field input,
+        .config-field select,
+        .config-field textarea {
+            padding: 10px 12px;
+            border: 1px solid var(--gray-300);
+            border-radius: 8px;
+            font-size: 0.9rem;
+            transition: border-color 0.2s;
+        }
+
+        .config-field input:focus,
+        .config-field select:focus,
+        .config-field textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .config-field textarea {
+            min-height: 100px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.8rem;
+        }
+
+        .config-actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+
+        .config-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+
+        .config-status.connected {
+            background: var(--success-light);
+            color: var(--success);
+        }
+
+        .config-status.disconnected {
+            background: var(--danger-light);
+            color: var(--danger);
+        }
+
+        .file-upload-area {
+            border: 2px dashed var(--gray-300);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .file-upload-area:hover {
+            border-color: var(--primary);
+            background: var(--gray-50);
+        }
+
+        .file-upload-area.dragover {
+            border-color: var(--primary);
+            background: rgba(45, 55, 72, 0.05);
+        }
+
+        .file-upload-area i {
+            font-size: 2rem;
+            color: var(--gray-400);
+            margin-bottom: 8px;
+        }
+
+        .file-upload-area p {
+            color: var(--gray-500);
+            font-size: 0.9rem;
+        }
+
+        .file-upload-area input[type="file"] {
+            display: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            .analysis-panel {
+                position: static;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>
+                <i class="fas fa-terminal"></i>
+                Natural Language Automation Framework
+            </h1>
+            <div class="header-actions">
+                <button class="btn btn-primary" onclick="runAllTests()">
+                    <i class="fas fa-play"></i>
+                    Run All
+                </button>
+            </div>
+        </div>
+
+        <!-- Module Tabs -->
+        <div class="module-tabs">
+            <button class="module-tab" data-module="ui" onclick="selectModule('ui')">
+                <i class="fas fa-desktop"></i>
+                UI Module
+            </button>
+            <button class="module-tab active" data-module="api" onclick="selectModule('api')">
+                <i class="fas fa-plug"></i>
+                API Module
+            </button>
+            <button class="module-tab" data-module="db" onclick="selectModule('db')">
+                <i class="fas fa-database"></i>
+                DB Module
+            </button>
+        </div>
+
+        <!-- UI Configuration Panel -->
+        <div class="config-panel" id="config-ui" style="display: none;">
+            <div class="config-header" onclick="toggleConfig('ui')">
+                <h3>
+                    <i class="fas fa-cog"></i>
+                    UI Configuration
+                </h3>
+                <button class="config-toggle"><i class="fas fa-chevron-down"></i></button>
+            </div>
+            <div class="config-body">
+                <div class="config-grid">
+                    <div class="config-field" style="grid-column: 1 / -1;">
+                        <label><i class="fas fa-globe"></i> Base URL</label>
+                        <input type="url" id="ui-base-url" placeholder="https://www.example.com"
+                            value="https://www.saucedemo.com">
+                    </div>
+                </div>
+                <div class="config-actions">
+                    <button class="btn btn-primary" onclick="saveUIConfig()">
+                        <i class="fas fa-save"></i>
+                        Apply Configuration
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- API Configuration Panel -->
+        <div class="config-panel" id="config-api">
+            <div class="config-header" onclick="toggleConfig('api')">
+                <h3>
+                    <i class="fas fa-cog"></i>
+                    API Configuration
+                </h3>
+                <button class="config-toggle"><i class="fas fa-chevron-down"></i></button>
+            </div>
+            <div class="config-body">
+                <div class="config-grid">
+                    <div class="config-field" style="grid-column: 1 / -1;">
+                        <label><i class="fas fa-globe"></i> Base URL</label>
+                        <input type="url" id="api-base-url" placeholder="https://api.example.com"
+                            value="https://fakerestapi.azurewebsites.net">
+                    </div>
+                    <div class="config-field" style="grid-column: 1 / -1;">
+                        <label><i class="fas fa-file-code"></i> Swagger/OpenAPI JSON</label>
+                        <div class="file-upload-area" id="swagger-upload-area"
+                            onclick="document.getElementById('swagger-file').click()">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                            <p id="swagger-file-name">Click or drag to upload swagger.json</p>
+                            <input type="file" id="swagger-file" accept=".json" onchange="handleSwaggerUpload(this)">
+                        </div>
+                    </div>
+                    <div class="config-field" style="grid-column: 1 / -1;">
+                        <label><i class="fas fa-code"></i> Or paste Swagger JSON content</label>
+                        <textarea id="swagger-content" placeholder='{"openapi": "3.0.0", ...}'></textarea>
+                    </div>
+                </div>
+                <div class="config-actions">
+                    <span class="config-status disconnected" id="api-status">
+                        <i class="fas fa-circle"></i>
+                        Not configured
+                    </span>
+                    <button class="btn btn-primary" onclick="saveAPIConfig()">
+                        <i class="fas fa-save"></i>
+                        Apply Configuration
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- DB Configuration Panel -->
+        <div class="config-panel" id="config-db" style="display: none;">
+            <div class="config-header" onclick="toggleConfig('db')">
+                <h3>
+                    <i class="fas fa-cog"></i>
+                    Database Configuration
+                </h3>
+                <button class="config-toggle"><i class="fas fa-chevron-down"></i></button>
+            </div>
+            <div class="config-body">
+                <div class="config-grid">
+                    <div class="config-field">
+                        <label><i class="fas fa-database"></i> Database Type</label>
+                        <select id="db-type">
+                            <option value="mysql" selected>MySQL</option>
+                            <option value="postgresql">PostgreSQL</option>
+                            <option value="sqlite">SQLite</option>
+                            <option value="oracle">Oracle</option>
+                            <option value="mssql">SQL Server</option>
+                        </select>
+                    </div>
+                    <div class="config-field">
+                        <label><i class="fas fa-server"></i> Host</label>
+                        <input type="text" id="db-host" placeholder="127.0.0.1" value="127.0.0.1">
+                    </div>
+                    <div class="config-field">
+                        <label><i class="fas fa-plug"></i> Port</label>
+                        <input type="text" id="db-port" placeholder="3306" value="3306">
+                    </div>
+                    <div class="config-field">
+                        <label><i class="fas fa-database"></i> Database Name</label>
+                        <input type="text" id="db-name" placeholder="testdb" value="testdb">
+                    </div>
+                    <div class="config-field">
+                        <label><i class="fas fa-user"></i> Username</label>
+                        <input type="text" id="db-username" placeholder="root" value="root">
+                    </div>
+                    <div class="config-field">
+                        <label><i class="fas fa-key"></i> Password</label>
+                        <input type="password" id="db-password" placeholder="••••••••">
+                    </div>
+                </div>
+                <div class="config-actions">
+                    <span class="config-status disconnected" id="db-status">
+                        <i class="fas fa-circle"></i>
+                        Not connected
+                    </span>
+                    <button class="btn" onclick="testDBConnection()"
+                        style="background: var(--gray-200); color: var(--gray-700);">
+                        <i class="fas fa-plug"></i>
+                        Test Connection
+                    </button>
+                    <button class="btn btn-primary" onclick="saveDBConfig()">
+                        <i class="fas fa-save"></i>
+                        Connect & Apply
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Intent List -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>
+                        <i class="fas fa-list"></i>
+                        Intent Test Cases
+                    </h2>
+                    <span id="intent-count" class="status-badge pending">0 intents</span>
+                </div>
+                <div class="card-body">
+                    <div id="intent-list" class="intent-list">
+                        <!-- Intents will be rendered here -->
+                    </div>
+                    <button class="add-intent-btn" onclick="addIntent()">
+                        <i class="fas fa-plus"></i>
+                        Add New Intent
+                    </button>
+                </div>
+            </div>
+
+            <!-- Analysis Panel -->
+            <div class="card analysis-panel">
+                <div class="card-header">
+                    <h2 class="analysis-header">
+                        <i class="fas fa-microscope"></i>
+                        AI Analysis
+                    </h2>
+                </div>
+                <div class="analysis-content" id="analysis-content">
+                    <div class="analysis-placeholder">
+                        <i class="fas fa-search"></i>
+                        <p>Click on a test to view AI analysis</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer Actions -->
+        <div class="footer-actions">
+            <div class="footer-stats">
+                <div class="stat passed">
+                    <span class="stat-value" id="stat-passed">0</span>
+                    <span class="stat-label">Passed</span>
+                </div>
+                <div class="stat failed">
+                    <span class="stat-value" id="stat-failed">0</span>
+                    <span class="stat-label">Failed</span>
+                </div>
+                <div class="stat pending">
+                    <span class="stat-value" id="stat-pending">0</span>
+                    <span class="stat-label">Pending</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="btn" onclick="clearAll()" style="background: var(--gray-200); color: var(--gray-700);">
+                    <i class="fas fa-trash"></i>
+                    Clear All
+                </button>
+                <button class="btn btn-success" onclick="approveAndGenerate()">
+                    <i class="fas fa-check"></i>
+                    Approve & Generate Test
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner">
+            <i class="fas fa-circle-notch"></i>
+            <p id="loading-message">Running tests...</p>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script>
+        // State
+        let currentModule = 'api';
+        let intents = [];
+        let selectedIntentId = null;
+
+        // Module configuration state
+        let moduleConfig = {
+            ui: { base_url: 'https://www.saucedemo.com' },
+            api: { base_url: 'https://fakerestapi.azurewebsites.net', swagger_path: '' },
+            db: { db_type: 'mysql', host: '127.0.0.1', port: '3306', database: 'testdb', username: 'root', password: '' }
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadSession();
+            setupDragDrop();
+            updateConfigPanelVisibility();
+        });
+
+        // Setup drag and drop for swagger upload
+        function setupDragDrop() {
+            const area = document.getElementById('swagger-upload-area');
+            if (!area) return;
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(event => {
+                area.addEventListener(event, e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+            });
+
+            ['dragenter', 'dragover'].forEach(event => {
+                area.addEventListener(event, () => area.classList.add('dragover'));
+            });
+
+            ['dragleave', 'drop'].forEach(event => {
+                area.addEventListener(event, () => area.classList.remove('dragover'));
+            });
+
+            area.addEventListener('drop', e => {
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    handleSwaggerFile(files[0]);
+                }
+            });
+        }
+
+        // Handle swagger file upload
+        function handleSwaggerUpload(input) {
+            if (input.files.length > 0) {
+                handleSwaggerFile(input.files[0]);
+            }
+        }
+
+        function handleSwaggerFile(file) {
+            const reader = new FileReader();
+            reader.onload = e => {
+                try {
+                    const content = e.target.result;
+                    JSON.parse(content); // Validate JSON
+                    document.getElementById('swagger-content').value = content;
+                    document.getElementById('swagger-file-name').textContent = `✓ ${file.name} loaded`;
+
+                    // Save swagger to localStorage for persistence
+                    localStorage.setItem('swaggerContent', content);
+                    localStorage.setItem('swaggerFileName', file.name);
+
+                    showToast('Swagger file loaded successfully', 'success');
+                } catch (err) {
+                    showToast('Invalid JSON file', 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Toggle config panel collapse
+        function toggleConfig(module) {
+            const panel = document.getElementById(`config-${module}`);
+            if (panel) {
+                panel.classList.toggle('collapsed');
+            }
+        }
+
+        // Update which config panel is visible based on selected module
+        function updateConfigPanelVisibility() {
+            ['ui', 'api', 'db'].forEach(mod => {
+                const panel = document.getElementById(`config-${mod}`);
+                if (panel) {
+                    panel.style.display = mod === currentModule ? 'block' : 'none';
+                }
+            });
+        }
+
+        // Save UI Configuration
+        async function saveUIConfig() {
+            const baseUrl = document.getElementById('ui-base-url').value;
+
+            if (!baseUrl) {
+                showToast('Please enter a base URL', 'error');
+                return;
+            }
+
+            showLoading('Applying UI configuration...');
+
+            try {
+                const response = await fetch('/api/config/ui', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ base_url: baseUrl })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    moduleConfig.ui.base_url = baseUrl;
+                    showToast('UI configuration applied', 'success');
+                    saveSession();
+                } else {
+                    showToast(result.error || 'Failed to apply configuration', 'error');
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'error');
+            }
+
+            hideLoading();
+        }
+
+        // Save API Configuration
+        async function saveAPIConfig() {
+            const baseUrl = document.getElementById('api-base-url').value;
+            const swaggerContent = document.getElementById('swagger-content').value;
+
+            if (!baseUrl) {
+                showToast('Please enter a base URL', 'error');
+                return;
+            }
+
+            showLoading('Applying API configuration...');
+
+            try {
+                const response = await fetch('/api/config/api', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: baseUrl,
+                        swagger_content: swaggerContent || null
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    moduleConfig.api.base_url = baseUrl;
+
+                    // Save swagger to localStorage if provided
+                    if (swaggerContent) {
+                        localStorage.setItem('swaggerContent', swaggerContent);
+                        // Keep existing file name or set default
+                        if (!localStorage.getItem('swaggerFileName')) {
+                            localStorage.setItem('swaggerFileName', 'swagger.json');
+                        }
+                    }
+
+                    // Update status
+                    const status = document.getElementById('api-status');
+                    status.className = 'config-status connected';
+                    status.innerHTML = '<i class="fas fa-check-circle"></i> Configured';
+
+                    showToast('API configuration applied', 'success');
+                    saveSession();
+                } else {
+                    showToast(result.error || 'Failed to apply configuration', 'error');
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'error');
+            }
+
+            hideLoading();
+        }
+
+        // Save DB Configuration
+        async function saveDBConfig() {
+            const config = {
+                db_type: document.getElementById('db-type').value,
+                host: document.getElementById('db-host').value,
+                port: document.getElementById('db-port').value,
+                database: document.getElementById('db-name').value,
+                username: document.getElementById('db-username').value,
+                password: document.getElementById('db-password').value
+            };
+
+            if (!config.host || !config.database || !config.username) {
+                showToast('Please fill in required fields (host, database, username)', 'error');
+                return;
+            }
+
+            showLoading('Connecting to database...');
+
+            try {
+                const response = await fetch('/api/config/db', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    moduleConfig.db = config;
+
+                    // Update status
+                    const status = document.getElementById('db-status');
+                    status.className = 'config-status connected';
+                    status.innerHTML = `<i class="fas fa-check-circle"></i> Connected (${result.tables || 0} tables)`;
+
+                    showToast('Database connected successfully', 'success');
+                    saveSession();
+                } else {
+                    const status = document.getElementById('db-status');
+                    status.className = 'config-status disconnected';
+                    status.innerHTML = '<i class="fas fa-times-circle"></i> Connection failed';
+                    showToast(result.error || 'Failed to connect to database', 'error');
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'error');
+            }
+
+            hideLoading();
+        }
+
+        // Test DB Connection
+        async function testDBConnection() {
+            const config = {
+                db_type: document.getElementById('db-type').value,
+                host: document.getElementById('db-host').value,
+                port: document.getElementById('db-port').value,
+                database: document.getElementById('db-name').value,
+                username: document.getElementById('db-username').value,
+                password: document.getElementById('db-password').value
+            };
+
+            showLoading('Testing connection...');
+
+            try {
+                const response = await fetch('/api/config/db/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                const result = await response.json();
+
+                const status = document.getElementById('db-status');
+                if (result.success) {
+                    status.className = 'config-status connected';
+                    status.innerHTML = `<i class="fas fa-check-circle"></i> Connection OK (${result.tables || 0} tables)`;
+                    showToast('Connection successful!', 'success');
+                } else {
+                    status.className = 'config-status disconnected';
+                    status.innerHTML = '<i class="fas fa-times-circle"></i> Connection failed';
+                    showToast(result.error || 'Connection failed', 'error');
+                }
+            } catch (error) {
+                showToast('Error: ' + error.message, 'error');
+            }
+
+            hideLoading();
+        }
+
+        // Module Selection
+        function selectModule(module) {
+            currentModule = module;
+
+            // Update tabs
+            document.querySelectorAll('.module-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.module === module);
+            });
+
+            // Show/hide config panels
+            updateConfigPanelVisibility();
+
+            // Filter intents for current module
+            renderIntents();
+            saveSession();
+        }
+
+        // Add Intent
+        function addIntent() {
+            const id = 'intent-' + Date.now();
+            const intent = {
+                id: id,
+                module: currentModule,
+                intent: '',
+                status: 'pending',
+                result: null,
+                ai_analysis: '',
+                execution_time: 0,
+                created_at: new Date().toISOString()
+            };
+
+            intents.push(intent);
+            renderIntents();
+            saveSession();
+
+            // Focus on the new input
+            setTimeout(() => {
+                const input = document.querySelector(`[data-id="${id}"] .intent-input`);
+                if (input) input.focus();
+            }, 100);
+        }
+
+        // Delete Intent
+        function deleteIntent(id, event) {
+            event.stopPropagation();
+            intents = intents.filter(i => i.id !== id);
+            if (selectedIntentId === id) {
+                selectedIntentId = null;
+                renderAnalysis(null);
+            }
+            renderIntents();
+            saveSession();
+        }
+
+        // Auto-resize textarea to fit content
+        function autoResizeTextarea(textarea) {
+            if (!textarea) return;
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+        }
+
+        // Update Intent
+        function updateIntent(id, value) {
+            const intent = intents.find(i => i.id === id);
+            if (intent) {
+                intent.intent = value;
+                saveSession();
+            }
+        }
+
+        // Select Intent
+        function selectIntent(id) {
+            selectedIntentId = id;
+
+            // Update selected state
+            document.querySelectorAll('.intent-row').forEach(row => {
+                row.classList.toggle('selected', row.dataset.id === id);
+            });
+
+            // Show analysis
+            const intent = intents.find(i => i.id === id);
+            renderAnalysis(intent);
+        }
+
+        // Run Single Test
+        async function runTest(id, event) {
+            if (event) event.stopPropagation();
+
+            const intent = intents.find(i => i.id === id);
+            if (!intent || !intent.intent.trim()) {
+                showToast('Please enter an intent first', 'error');
+                return;
+            }
+
+            intent.status = 'running';
+            renderIntents();
+
+            showLoading(`Running: ${intent.intent.substring(0, 50)}...`);
+
+            try {
+                const response = await fetch('/api/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(intent)
+                });
+
+                const result = await response.json();
+
+                // Update intent with result
+                Object.assign(intent, result);
+
+                showToast(
+                    result.status === 'passed' ? 'Test passed!' : 'Test failed',
+                    result.status === 'passed' ? 'success' : 'error'
+                );
+
+            } catch (error) {
+                intent.status = 'failed';
+                intent.ai_analysis = JSON.stringify({ error: error.message });
+                showToast('Error running test: ' + error.message, 'error');
+            }
+
+            hideLoading();
+            renderIntents();
+
+            // Auto-select and show analysis for the completed test
+            selectedIntentId = id;
+            document.querySelectorAll('.intent-row').forEach(row => {
+                row.classList.toggle('selected', row.dataset.id === id);
+            });
+            renderAnalysis(intent);
+
+            saveSession();
+        }
+
+        // Run All Tests
+        async function runAllTests() {
+            const moduleIntents = intents.filter(i => i.module === currentModule && i.intent.trim());
+
+            if (moduleIntents.length === 0) {
+                showToast('No intents to run', 'error');
+                return;
+            }
+
+            showLoading(`Running ${moduleIntents.length} tests...`);
+
+            let lastIntent = null;
+
+            for (const intent of moduleIntents) {
+                intent.status = 'running';
+                renderIntents();
+
+                try {
+                    const response = await fetch('/api/run', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(intent)
+                    });
+
+                    const result = await response.json();
+                    Object.assign(intent, result);
+
+                } catch (error) {
+                    intent.status = 'failed';
+                    intent.ai_analysis = JSON.stringify({ error: error.message });
+                }
+
+                renderIntents();
+                lastIntent = intent;
+
+                // Update analysis panel in real-time to show current test
+                selectedIntentId = intent.id;
+                document.querySelectorAll('.intent-row').forEach(row => {
+                    row.classList.toggle('selected', row.dataset.id === intent.id);
+                });
+                renderAnalysis(intent);
+            }
+
+            hideLoading();
+
+            const passed = moduleIntents.filter(i => i.status === 'passed').length;
+            const failed = moduleIntents.filter(i => i.status === 'failed').length;
+
+            showToast(`Completed: ${passed} passed, ${failed} failed`, passed > failed ? 'success' : 'error');
+            saveSession();
+        }
+
+        // Approve and Generate Test File
+        async function approveAndGenerate() {
+            const moduleIntents = intents.filter(i => i.module === currentModule && i.intent.trim());
+
+            if (moduleIntents.length === 0) {
+                showToast('No intents to generate', 'error');
+                return;
+            }
+
+            showLoading('Generating test file...');
+
+            try {
+                const response = await fetch('/api/approve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        module: currentModule,
+                        intents: moduleIntents
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast(`Test file generated: ${result.filepath}`, 'success');
+                } else {
+                    showToast('Failed to generate test file', 'error');
+                }
+
+            } catch (error) {
+                showToast('Error generating test file: ' + error.message, 'error');
+            }
+
+            hideLoading();
+        }
+
+        // Clear All
+        function clearAll() {
+            if (confirm('Clear all intents for this module?')) {
+                intents = intents.filter(i => i.module !== currentModule);
+                selectedIntentId = null;
+                renderIntents();
+                renderAnalysis(null);
+                saveSession();
+                showToast('All intents cleared', 'info');
+            }
+        }
+
+        // Render Intents
+        function renderIntents() {
+            const container = document.getElementById('intent-list');
+            const moduleIntents = intents.filter(i => i.module === currentModule);
+
+            if (moduleIntents.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-flask"></i>
+                        <h3>No intents yet</h3>
+                        <p>Click "Add New Intent" to get started</p>
+                    </div>
+                `;
+            } else {
+                container.innerHTML = moduleIntents.map((intent, index) => `
+                    <div class="intent-row ${intent.status} ${selectedIntentId === intent.id ? 'selected' : ''}" 
+                         data-id="${intent.id}" 
+                         onclick="selectIntent('${intent.id}')">
+                        <div class="row-number">${index + 1}</div>
+                        <textarea class="intent-input" 
+                                  placeholder="Enter your intent here... e.g., 'get book with id 1'"
+                                  oninput="updateIntent('${intent.id}', this.value); autoResizeTextarea(this)"
+                                  onclick="event.stopPropagation()">${intent.intent}</textarea>
+                        <span class="status-badge ${intent.status}">
+                            ${getStatusIcon(intent.status)} ${intent.status}
+                        </span>
+                        <div class="row-actions">
+                            <button class="btn-icon btn-run" onclick="runTest('${intent.id}', event)" title="Run">
+                                <i class="fas fa-play"></i>
+                            </button>
+                            <button class="btn-icon btn-delete" onclick="deleteIntent('${intent.id}', event)" title="Delete">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+
+                // Auto-resize all textareas after render
+                document.querySelectorAll('.intent-input').forEach(autoResizeTextarea);
+            }
+
+            // Update counts
+            const allModuleIntents = intents.filter(i => i.module === currentModule);
+            document.getElementById('intent-count').textContent = `${allModuleIntents.length} intent${allModuleIntents.length !== 1 ? 's' : ''}`;
+
+            // Update stats
+            document.getElementById('stat-passed').textContent = allModuleIntents.filter(i => i.status === 'passed').length;
+            document.getElementById('stat-failed').textContent = allModuleIntents.filter(i => i.status === 'failed').length;
+            document.getElementById('stat-pending').textContent = allModuleIntents.filter(i => i.status === 'pending').length;
+        }
+
+        // Get Status Icon
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'passed': return '<i class="fas fa-check"></i>';
+                case 'failed': return '<i class="fas fa-times"></i>';
+                case 'running': return '<i class="fas fa-spinner fa-spin"></i>';
+                default: return '<i class="fas fa-clock"></i>';
+            }
+        }
+
+        // Render Analysis
+        function renderAnalysis(intent) {
+            const container = document.getElementById('analysis-content');
+
+            if (!intent || !intent.ai_analysis) {
+                container.innerHTML = `
+                    <div class="analysis-placeholder">
+                        <i class="fas fa-search"></i>
+                        <p>Click on a test to view AI analysis</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let analysisData;
+            try {
+                analysisData = typeof intent.ai_analysis === 'string'
+                    ? JSON.parse(intent.ai_analysis)
+                    : intent.ai_analysis;
+            } catch (e) {
+                analysisData = { raw: intent.ai_analysis };
+            }
+
+            // Extract AI reason/verdict in human-readable format
+            const aiVerdict = extractAIVerdict(analysisData, intent);
+
+            // Build step progress for UI tests
+            let stepProgressHtml = '';
+            if (intent.module === 'ui' && analysisData.steps && Array.isArray(analysisData.steps)) {
+                stepProgressHtml = `
+                    <div class="analysis-section">
+                        <h4><i class="fas fa-list-check"></i> Step Progress</h4>
+                        <div class="step-progress-list">
+                            ${analysisData.steps.map((step, idx) => `
+                                <div class="step-item ${step.status}">
+                                    <span class="step-number">${idx + 1}</span>
+                                    <span class="step-type">[${step.step_type}]</span>
+                                    <span class="step-intent">${escapeHtml(step.intent)}</span>
+                                    <span class="step-status ${step.status}">
+                                        ${step.status === 'passed' ? '<i class="fas fa-check"></i>' : '<i class="fas fa-times"></i>'}
+                                    </span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = `
+                <div class="analysis-section">
+                    <h4><i class="fas fa-info-circle"></i> Status</h4>
+                    <span class="analysis-status ${intent.status}">
+                        ${getStatusIcon(intent.status)}
+                        ${intent.status.toUpperCase()}
+                        ${intent.execution_time ? `(${intent.execution_time}s)` : ''}
+                    </span>
+                </div>
+                
+                <!-- AI Verdict Section - Human Readable -->
+                <div class="analysis-section verdict-section ${intent.status}">
+                    <h4><i class="fas fa-gavel"></i> AI Verdict</h4>
+                    <div class="verdict-box ${intent.status}">
+                        <div class="verdict-icon">
+                            ${intent.status === 'passed'
+                    ? '<i class="fas fa-check-circle"></i>'
+                    : '<i class="fas fa-times-circle"></i>'}
+                        </div>
+                        <div class="verdict-text">
+                            <p class="verdict-reason">${escapeHtml(aiVerdict.reason)}</p>
+                            ${aiVerdict.details ? `<p class="verdict-details">${escapeHtml(aiVerdict.details)}</p>` : ''}
+                        </div>
+                    </div>
+                </div>
+                
+                ${stepProgressHtml}
+                
+                <div class="analysis-section">
+                    <h4><i class="fas fa-terminal"></i> Intent</h4>
+                    <div class="analysis-code">${escapeHtml(intent.intent)}</div>
+                </div>
+                
+                <div class="analysis-section">
+                    <h4><i class="fas fa-brain"></i> Full Analysis Details</h4>
+                    <div class="analysis-code">${escapeHtml(JSON.stringify(analysisData, null, 2))}</div>
+                </div>
+            `;
+        }
+
+        // Extract AI verdict in human-readable format
+        function extractAIVerdict(analysisData, intent) {
+            let reason = '';
+            let details = '';
+
+            // For DB module
+            if (intent.module === 'db') {
+                reason = analysisData.reason || 'No analysis available';
+                if (analysisData.query) {
+                    details = `Query: ${analysisData.query}`;
+                }
+                if (analysisData.data && Array.isArray(analysisData.data)) {
+                    const count = analysisData.data.length;
+                    details += count > 0 ? ` | Found ${count} record(s)` : ' | No records found';
+                }
+            }
+            // For API module
+            else if (intent.module === 'api') {
+                // API analysis can be an object or a JSON string
+                let analysis = analysisData.analysis;
+
+                // Parse if it's a string
+                if (typeof analysis === 'string') {
+                    try {
+                        // Try to extract JSON from the string
+                        const jsonMatch = analysis.match(/\{[\s\S]*\}/);
+                        if (jsonMatch) {
+                            analysis = JSON.parse(jsonMatch[0]);
+                        }
+                    } catch (e) {
+                        console.log('Could not parse API analysis:', e);
+                    }
+                }
+
+                // Now extract the reason
+                if (analysis && typeof analysis === 'object' && analysis.reason) {
+                    reason = analysis.reason;
+                } else if (analysisData.error) {
+                    reason = `Error: ${analysisData.error}`;
+                } else if (analysisData.status_code) {
+                    const statusDesc = analysisData.status_code >= 200 && analysisData.status_code < 300
+                        ? 'Request completed successfully'
+                        : `Request failed with status ${analysisData.status_code}`;
+                    reason = statusDesc;
+                } else {
+                    reason = 'API execution completed';
+                }
+
+                // Add status code to details
+                if (analysisData.status_code) {
+                    details = `Status: ${analysisData.status_code}`;
+                }
+                if (analysisData.curl_command) {
+                    details += details ? ' | ' : '';
+                    details += `Command: ${analysisData.curl_command.substring(0, 80)}...`;
+                }
+            }
+            // For UI module
+            else if (intent.module === 'ui') {
+                if (analysisData.steps && Array.isArray(analysisData.steps)) {
+                    const passedSteps = analysisData.steps.filter(s => s.status === 'passed').length;
+                    const totalSteps = analysisData.steps.length;
+
+                    // Find failed step if any
+                    const failedStep = analysisData.steps.find(s => s.status === 'failed');
+
+                    if (failedStep) {
+                        // Build a clear failure message
+                        const stepAction = failedStep.duo_response;
+                        const stepError = failedStep.error || 'Execution failed';
+
+                        // Extract expected text from action if it's a verify action
+                        if (stepAction && stepAction.action_type === 'verify') {
+                            const checks = stepAction.action_json?.checks || [];
+                            const textCheck = checks.find(c => c.type === 'text_visible' || c.text);
+
+                            if (textCheck && textCheck.text) {
+                                reason = `Verification failed at step ${passedSteps + 1}/${totalSteps}`;
+                                details = `Expected text: "${textCheck.text}" was not found on the page`;
+                            } else {
+                                reason = `Step ${passedSteps + 1}/${totalSteps} failed: [${failedStep.step_type}] ${failedStep.intent}`;
+                                details = stepError;
+                            }
+                        } else {
+                            reason = `Step ${passedSteps + 1}/${totalSteps} failed: [${failedStep.step_type}] ${failedStep.intent}`;
+                            details = stepError;
+                        }
+                    } else if (analysisData.error) {
+                        reason = analysisData.error;
+                        details = `Completed ${passedSteps}/${totalSteps} steps before failure`;
+                    } else {
+                        reason = `All ${totalSteps} steps completed successfully`;
+                        details = '';
+                    }
+                } else if (analysisData.error) {
+                    reason = analysisData.error;
+                } else {
+                    reason = intent.status === 'passed' ? 'All steps completed successfully' : 'Execution failed';
+                }
+            }
+            // Fallback
+            else {
+                reason = analysisData.reason || analysisData.error || JSON.stringify(analysisData).substring(0, 200);
+            }
+
+            return { reason, details };
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Save Session
+        function saveSession() {
+            const session = {
+                currentModule: currentModule,
+                intents: intents,
+                moduleConfig: moduleConfig
+            };
+            localStorage.setItem('intentTestRunner', JSON.stringify(session));
+        }
+
+        // Load Session
+        function loadSession() {
+            try {
+                const saved = localStorage.getItem('intentTestRunner');
+                if (saved) {
+                    const session = JSON.parse(saved);
+                    currentModule = session.currentModule || 'api';
+                    intents = session.intents || [];
+
+                    // Load module configuration
+                    if (session.moduleConfig) {
+                        moduleConfig = { ...moduleConfig, ...session.moduleConfig };
+
+                        // Populate UI fields
+                        if (moduleConfig.ui.base_url) {
+                            document.getElementById('ui-base-url').value = moduleConfig.ui.base_url;
+                        }
+                        if (moduleConfig.api.base_url) {
+                            document.getElementById('api-base-url').value = moduleConfig.api.base_url;
+                        }
+                        if (moduleConfig.db) {
+                            if (moduleConfig.db.db_type) document.getElementById('db-type').value = moduleConfig.db.db_type;
+                            if (moduleConfig.db.host) document.getElementById('db-host').value = moduleConfig.db.host;
+                            if (moduleConfig.db.port) document.getElementById('db-port').value = moduleConfig.db.port;
+                            if (moduleConfig.db.database) document.getElementById('db-name').value = moduleConfig.db.database;
+                            if (moduleConfig.db.username) document.getElementById('db-username').value = moduleConfig.db.username;
+                            // Don't restore password for security
+                        }
+                    }
+
+                    // Update UI
+                    selectModule(currentModule);
+                }
+
+                // Restore swagger content from localStorage (separate from session)
+                const savedSwagger = localStorage.getItem('swaggerContent');
+                const savedSwaggerName = localStorage.getItem('swaggerFileName');
+                if (savedSwagger) {
+                    document.getElementById('swagger-content').value = savedSwagger;
+                    document.getElementById('swagger-file-name').textContent = `✓ ${savedSwaggerName || 'swagger.json'} (cached)`;
+
+                    // Re-apply swagger to backend if API module has base_url configured
+                    if (moduleConfig.api.base_url) {
+                        applySwaggerToBackend(savedSwagger);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load session:', e);
+            }
+
+            renderIntents();
+        }
+
+        // Apply swagger content to backend without showing loading
+        async function applySwaggerToBackend(swaggerContent) {
+            try {
+                await fetch('/api/config/api', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: moduleConfig.api.base_url,
+                        swagger_content: swaggerContent
+                    })
+                });
+                console.log('Swagger restored to backend');
+            } catch (error) {
+                console.error('Failed to restore swagger to backend:', error);
+            }
+        }
+
+        // Loading
+        function showLoading(message) {
+            document.getElementById('loading-message').textContent = message;
+            document.getElementById('loading-overlay').classList.add('active');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').classList.remove('active');
+        }
+
+        // Toast
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+
+</html>

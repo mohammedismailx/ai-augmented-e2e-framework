@@ -512,7 +512,11 @@ class APIWrapper:
         result["analysis"] = analysis
 
         if analysis:
-            logger.log_ai_response(analysis)
+            # Handle both dict and string analysis for logging
+            if isinstance(analysis, dict):
+                logger.log_ai_response(json.dumps(analysis, indent=2))
+            else:
+                logger.log_ai_response(analysis)
         else:
             logger.log("(No analysis returned)")
 
@@ -714,18 +718,22 @@ class APIWrapper:
 
         return None
 
-    def _parse_analysis_json(self, analysis: str) -> dict:
+    def _parse_analysis_json(self, analysis) -> dict:
         """
-        Parse the JSON analysis from GitLab Duo response.
+        Parse the JSON analysis from AI agent response.
 
         Args:
-            analysis: The raw analysis string from GitLab Duo
+            analysis: The analysis result (can be dict or string)
 
         Returns:
             dict: Parsed JSON with 'success' and 'reason' keys, or None if parsing fails
         """
         if not analysis:
             return None
+
+        # If already a dict, return it directly
+        if isinstance(analysis, dict):
+            return analysis
 
         try:
             # Try to parse the analysis directly as JSON
@@ -1046,7 +1054,12 @@ class APIWrapper:
         )
         log(f"+{'-'*78}+")
         if result["analysis"]:
-            analysis_lines = result["analysis"].split("\n")
+            # Handle both dict and string analysis
+            if isinstance(result["analysis"], dict):
+                analysis_text = json.dumps(result["analysis"], indent=2)
+            else:
+                analysis_text = str(result["analysis"])
+            analysis_lines = analysis_text.split("\n")
             for line in analysis_lines[:40]:  # Limit to 40 lines
                 log(f"| {line[:76]:<76} |")
             if len(analysis_lines) > 40:

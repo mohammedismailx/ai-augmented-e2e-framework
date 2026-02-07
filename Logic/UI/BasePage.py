@@ -872,14 +872,20 @@ class BasePage:
 
         try:
             if action_type == "navigate":
-                page_ref = action.get("page_ref", "")
-                url = self._resolve_url(page_ref)
+                # Check for direct URL first, then page_ref
+                url = action.get("url", "")
+                if not url:
+                    page_ref = action.get("page_ref", "")
+                    url = self._resolve_url(page_ref)
+
                 if url:
                     self.page.goto(url)
                     logger.log(f"[EXECUTE] Navigated to {url}")
                     return True
                 else:
-                    logger.log(f"[EXECUTE] Could not resolve URL for {page_ref}")
+                    logger.log(
+                        f"[EXECUTE] Could not resolve URL - no url or page_ref provided"
+                    )
                     return False
 
             elif action_type == "click":
@@ -939,6 +945,7 @@ class BasePage:
     def _execute_verification(self, action: dict, logger: IntentLogger) -> bool:
         """
         Execute verification checks.
+        Enhanced to capture actual values for better failure analysis.
         """
         checks = action.get("checks", [])
 
@@ -947,6 +954,9 @@ class BasePage:
             locator = check.get("locator", "")
             value = check.get("value", "")
             text = check.get("text", "")
+            expected_text = check.get(
+                "expected_text", text or value
+            )  # Expected text to match
 
             try:
                 if check_type == "element_visible":
@@ -974,6 +984,63 @@ class BasePage:
                         return False
                     logger.log(f"[VERIFY] Text visible: {text}")
 
+                elif check_type == "text_equals" or check_type == "text_contains":
+                    # Get the actual text from the element
+                    element = self.page.locator(locator).first
+                    actual_text = (
+                        element.inner_text().strip()
+                        if element.is_visible()
+                        else "(element not visible)"
+                    )
+
+                    if check_type == "text_equals":
+                        if actual_text.lower() != expected_text.lower():
+                            logger.log(f"[VERIFY FAILED] Text mismatch!")
+                            logger.log(f"  Expected: '{expected_text}'")
+                            logger.log(f"  Actual:   '{actual_text}'")
+                            logger.log(f"  Locator:  {locator}")
+                            # Store actual value for analysis
+                            self._last_verification_actual = actual_text
+                            self._last_verification_expected = expected_text
+                            raise AssertionError(
+                                f"Text mismatch - Expected: '{expected_text}', Actual: '{actual_text}'"
+                            )
+                        logger.log(f"[VERIFY] Text equals '{expected_text}' ✓")
+                    else:  # text_contains
+                        if expected_text.lower() not in actual_text.lower():
+                            logger.log(f"[VERIFY FAILED] Text not found!")
+                            logger.log(f"  Expected to contain: '{expected_text}'")
+                            logger.log(f"  Actual text:         '{actual_text}'")
+                            logger.log(f"  Locator:             {locator}")
+                            self._last_verification_actual = actual_text
+                            self._last_verification_expected = expected_text
+                            raise AssertionError(
+                                f"Text not found - Expected to contain: '{expected_text}', Actual: '{actual_text}'"
+                            )
+                        logger.log(f"[VERIFY] Text contains '{expected_text}' ✓")
+
+                elif check_type == "element_text":
+                    # Generic element text verification
+                    element = self.page.locator(locator).first
+                    if not element.is_visible():
+                        logger.log(f"[VERIFY] Element not visible: {locator}")
+                        return False
+                    actual_text = element.inner_text().strip()
+                    expected = value or text or expected_text
+                    if actual_text.lower() != expected.lower():
+                        logger.log(f"[VERIFY FAILED] Element text mismatch!")
+                        logger.log(f"  Expected: '{expected}'")
+                        logger.log(f"  Actual:   '{actual_text}'")
+                        self._last_verification_actual = actual_text
+                        self._last_verification_expected = expected
+                        raise AssertionError(
+                            f"Element text mismatch - Expected: '{expected}', Actual: '{actual_text}'"
+                        )
+                    logger.log(f"[VERIFY] Element text equals '{expected}' ✓")
+
+            except AssertionError:
+                # Re-raise assertion errors with the actual/expected info
+                raise
             except Exception as e:
                 logger.log(f"[VERIFY] Check failed: {e}")
                 return False

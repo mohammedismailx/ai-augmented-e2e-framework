@@ -339,7 +339,7 @@ class AIAgent:
         return_prompt: bool = False,
     ):
         """
-        Analyze API response using GitLab Duo.
+        Analyze API response to determine if it meets the intent.
 
         Args:
             intent (str): Original user intent
@@ -347,27 +347,53 @@ class AIAgent:
             response_body (str): The response body from the API
             status_code (int): HTTP status code
             stderr (str): Any error output from curl execution
-            return_prompt (bool): If True, returns tuple (response, prompt)
+            return_prompt (bool): If True, returns tuple (analysis, prompt)
 
         Returns:
-            str or tuple: Analysis result, or (analysis, prompt) if return_prompt=True
+            dict or tuple: Analysis result {"success": bool, "reason": str},
+                          or (analysis, prompt) if return_prompt=True
         """
         self._initialize_conversation(
-            "You are an expert in REST API response analysis, HTTP status interpretation, and test result evaluation."
+            "You are an expert API analyst. Analyze responses and return JSON only."
         )
 
         goal = get_api_response_analysis_prompt(
             intent, curl_command, response_body, status_code, stderr
         )
 
-        # Use .json file extension to hint that we want JSON output
-        # Use a direct instruction that asks for the analysis result
-        analysis = self._prompt_agent(
+        analysis_response = self._prompt_agent(
             goal,
-            file_name="analysis_result.json",
-            constraints="Return ONLY the JSON object with success and reason fields",
-            backstory="Analyze the API response and return JSON: ",
+            file_name="api_analysis.json",
+            constraints='Return ONLY {"success": true/false, "reason": "your analysis"}',
+            backstory="You are an expert in API response analysis.",
         )
+
+        # Parse the analysis response - simple JSON extraction
+        analysis = {"success": False, "reason": "No response from AI agent"}
+
+        if analysis_response:
+            import re
+
+            # Find JSON in response
+            json_match = re.search(
+                r'\{[^{}]*"success"\s*:\s*(true|false)[^{}]*"reason"\s*:\s*"([^"]+)"[^{}]*\}',
+                analysis_response,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if json_match:
+                analysis = {
+                    "success": json_match.group(1).lower() == "true",
+                    "reason": json_match.group(2),
+                }
+            else:
+                # Try direct JSON parse
+                try:
+                    analysis = json.loads(analysis_response)
+                except json.JSONDecodeError:
+                    analysis = {
+                        "success": False,
+                        "reason": "Could not parse AI response",
+                    }
 
         if return_prompt:
             return analysis, goal
@@ -474,7 +500,7 @@ class AIAgent:
                           or (analysis, prompt) if return_prompt=True
         """
         self._initialize_conversation(
-            "You are an expert database analyst specializing in query result validation."
+            "You are an expert database analyst. Analyze query results and return JSON only."
         )
 
         goal = get_db_query_analysis_prompt(intent, sql_query, result)
@@ -482,96 +508,36 @@ class AIAgent:
         analysis_response = self._prompt_agent(
             goal,
             file_name="query_analysis.json",
-            constraints='Return ONLY {"success": true/false, "reason": "explanation"}',
+            constraints='Return ONLY {"success": true/false, "reason": "your analysis"}',
             backstory="You are an expert in database result analysis.",
         )
 
-        # Parse the analysis response
-        try:
-            if analysis_response:
-                # Try to extract JSON from the response
-                import re
+        # Parse the analysis response - simple JSON extraction
+        analysis = {"success": False, "reason": "No response from AI agent"}
 
-                # Find the last occurrence of {"success" - this is the actual AI response
-                json_start = analysis_response.rfind('{"success"')
-                if json_start != -1:
-                    # Extract from {"success" to end and find the closing brace
-                    json_str = analysis_response[json_start:]
-                    brace_count = 0
-                    json_end = 0
-                    for i, char in enumerate(json_str):
-                        if char == "{":
-                            brace_count += 1
-                        elif char == "}":
-                            brace_count -= 1
-                            if brace_count == 0:
-                                json_end = i + 1
-                                break
-                    if json_end > 0:
-                        try:
-                            analysis = json.loads(json_str[:json_end])
-                            # Validate the analysis has required keys
-                            if "success" not in analysis:
-                                analysis["success"] = False
-                            # Check if AI returned placeholder text instead of actual analysis
-                            placeholder_phrases = [
-                                "explanation",
-                                "Describe exactly WHY",
-                                "YOUR specific analysis",
-                            ]
-                            reason = analysis.get("reason", "")
-                            if not reason or any(
-                                p in reason for p in placeholder_phrases
-                            ):
-                                # Generate a meaningful reason based on the result
-                                analysis["reason"] = (
-                                    "AI did not provide detailed analysis"
-                                )
-                        except json.JSONDecodeError:
-                            # Fallback regex pattern for simpler cases
-                            simple_pattern = r'"success"\s*:\s*(true|false)'
-                            reason_pattern = r'"reason"\s*:\s*"([^"]+)"'
+        if analysis_response:
+            import re
 
-                            success_match = re.search(
-                                simple_pattern, json_str, re.IGNORECASE
-                            )
-                            reason_match = re.search(
-                                reason_pattern, json_str, re.IGNORECASE
-                            )
-
-                            analysis = {
-                                "success": (
-                                    success_match.group(1).lower() == "true"
-                                    if success_match
-                                    else False
-                                ),
-                                "reason": (
-                                    reason_match.group(1)
-                                    if reason_match
-                                    else "Could not parse reason from response"
-                                ),
-                            }
-                    else:
-                        analysis = {
-                            "success": False,
-                            "reason": "Could not find complete JSON in response",
-                        }
-                else:
-                    # Last resort: try direct JSON parse
-                    try:
-                        analysis = json.loads(analysis_response)
-                    except json.JSONDecodeError:
-                        analysis = {
-                            "success": False,
-                            "reason": f"No JSON found in response: {analysis_response[:200]}",
-                        }
+            # Find JSON in response
+            json_match = re.search(
+                r'\{[^{}]*"success"\s*:\s*(true|false)[^{}]*"reason"\s*:\s*"([^"]+)"[^{}]*\}',
+                analysis_response,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if json_match:
+                analysis = {
+                    "success": json_match.group(1).lower() == "true",
+                    "reason": json_match.group(2),
+                }
             else:
-                analysis = {"success": False, "reason": "No response from AI agent"}
-        except json.JSONDecodeError:
-            analysis = {
-                "success": False,
-                "reason": f"Could not parse AI response: {analysis_response[:200] if analysis_response else 'None'}",
-            }
+                # Try direct JSON parse
+                try:
+                    analysis = json.loads(analysis_response)
+                except json.JSONDecodeError:
+                    analysis = {
+                        "success": False,
+                        "reason": f"Could not parse AI response",
+                    }
 
         if return_prompt:
             return analysis, goal
@@ -859,7 +825,7 @@ class AIAgent:
             return_prompt: If True, return the prompt instead of executing
 
         Returns:
-            Analysis dict with root_cause, suggestions, element_analysis, etc.
+            Analysis dict with root_cause, failure_type, recommendation, etc.
             or prompt string if return_prompt=True
         """
         prompt = get_ui_step_failure_analysis_prompt(
@@ -869,7 +835,7 @@ class AIAgent:
             error=error_message,
             relevant_elements=relevant_elements or [],
             page_url=page_url,
-            page_title=page_html_snippet or "",  # Use snippet as title fallback
+            page_title=page_html_snippet or "",
             previous_steps=previous_steps or [],
         )
 
@@ -877,19 +843,37 @@ class AIAgent:
             return prompt
 
         self._initialize_conversation(
-            "You are an expert test automation failure analyst with deep knowledge of "
-            "Playwright, web technologies, and debugging techniques. You analyze failed "
-            "UI test steps and provide comprehensive insights."
+            "You are an expert UI test analyst. Analyze failures and return JSON only."
         )
 
         response = self._prompt_agent(
             prompt,
             file_name="ui_failure_analysis.json",
-            constraints="Return ONLY valid JSON analysis with root_cause, suggestions, and element_analysis",
-            backstory="You are a senior QA engineer specializing in diagnosing test failures...",
+            constraints='Return ONLY {"root_cause": "...", "failure_type": "...", ...}',
+            backstory="You are an expert in UI test failure analysis.",
         )
 
-        return self._parse_json_response(response)
+        # Parse the response - simple JSON extraction
+        analysis = {"root_cause": "No response from AI agent", "is_test_issue": True}
+
+        if response:
+            try:
+                analysis = json.loads(response)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                import re
+
+                json_match = re.search(r"\{.*\}", response, re.DOTALL)
+                if json_match:
+                    try:
+                        analysis = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        analysis = {
+                            "root_cause": "Could not parse AI response",
+                            "is_test_issue": True,
+                        }
+
+        return analysis
 
     # =========================================================================
     # UI MODULE-BASED LEARNING (DUO returns full metadata dict)

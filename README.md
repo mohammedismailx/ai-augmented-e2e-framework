@@ -827,16 +827,9 @@ Check log files:
 
 ---
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
 ## 👥 Authors
 
-- **Framework Team** - *Initial work*
-
+- Mohammed Ismail (mohammed.ismail2@emirates.com)
 ---
 
 ## 🙏 Acknowledgments

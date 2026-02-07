@@ -180,7 +180,7 @@ class FrameworkLogger:
 
 class IntentLogger:
     """
-    Logger specifically for intent-based API/DB execution.
+    Logger specifically for intent-based API/DB/UI execution.
     Logs to both console and file with proper formatting.
     Automatically reads test ID and title from builtins.CURRENT_TEST_INFO.
     """
@@ -188,6 +188,7 @@ class IntentLogger:
     # Class-level log file paths
     API_LOG_FILE = "api_with_intent_logs.txt"
     DB_LOG_FILE = "db_with_intent_logs.txt"
+    UI_LOG_FILE = "ui_with_intent_logs.txt"
 
     def __init__(self, log_file: str = None, test_type: str = "API"):
         """
@@ -195,13 +196,16 @@ class IntentLogger:
 
         Args:
             log_file: Path to log file. If None, uses default based on test_type.
-            test_type: Type of test - "API" or "DB"
+            test_type: Type of test - "API", "DB", or "UI"
         """
         self.test_type = test_type.upper()
         if log_file is None:
-            self.log_file = (
-                self.DB_LOG_FILE if self.test_type == "DB" else self.API_LOG_FILE
-            )
+            if self.test_type == "DB":
+                self.log_file = self.DB_LOG_FILE
+            elif self.test_type == "UI":
+                self.log_file = self.UI_LOG_FILE
+            else:
+                self.log_file = self.API_LOG_FILE
         else:
             self.log_file = log_file
         self.file_handle = None

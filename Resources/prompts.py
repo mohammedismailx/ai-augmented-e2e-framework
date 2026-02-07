@@ -855,3 +855,383 @@ def get_db_query_retry_prompt(
         🏁 **GENERATE FIXED SQL QUERY NOW** 🏁
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
+
+
+# =============================================================================
+# UI INTENT-BASED EXECUTION PROMPTS
+# =============================================================================
+
+
+def get_ui_step_action_prompt(
+    step_intent: str,
+    step_type: str,
+    relevant_elements: list,
+    page_url: str,
+    previous_steps: list = None,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to determine action for a single UI step.
+
+    Args:
+        step_intent: The step text (e.g., "fill username with standard_user")
+        step_type: Given/When/Then/And
+        relevant_elements: Elements retrieved by IntentLocatorLibrary
+        page_url: Current page URL
+        previous_steps: List of previously executed steps for context
+    """
+
+    elements_str = "\n".join(
+        [f"  {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:10])]
+    )
+
+    previous_context = ""
+    if previous_steps:
+        prev_str = "\n".join(
+            [
+                f"  - {s.get('step_type', '')} {s.get('intent', '')}: {s.get('status', 'pending')}"
+                for s in previous_steps[-3:]
+            ]
+        )
+        previous_context = f"\n## Previous Steps Executed\n{prev_str}\n"
+
+    return f"""
+        Your expertise: Playwright browser automation, CSS/XPath selectors, and UI testing.
+
+        📋 **MISSION**: Analyze the step and determine the exact Playwright action to perform.
+
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🌐 CURRENT PAGE URL:
+        {page_url}
+
+        📝 STEP TO EXECUTE:
+        Type: {step_type}
+        Intent: {step_intent}
+        {previous_context}
+        🎯 RELEVANT ELEMENTS FOUND ON PAGE:
+        {elements_str}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        ⚡ **ACTION DETERMINATION RULES** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1️⃣ **NAVIGATE ACTION** (keywords: navigate, go to, open, visit)
+           - Extract page reference from intent
+           - Return: {{"action": "navigate", "page_ref": "login_page"}}
+
+        2️⃣ **CLICK ACTION** (keywords: click, press, tap, submit)
+           - Find best matching button/link from elements
+           - Return: {{"action": "click", "locator": "#element-selector"}}
+
+        3️⃣ **FILL ACTION** (keywords: fill, enter, type, input, write)
+           - Find best matching input field from elements
+           - Extract value from intent (after "with", "as", "=")
+           - Return: {{"action": "fill", "locator": "#input-selector", "value": "text to enter"}}
+
+        4️⃣ **SELECT ACTION** (keywords: select, choose, pick, dropdown)
+           - Find best matching select/dropdown from elements
+           - Extract option value from intent
+           - Return: {{"action": "select", "locator": "#select-selector", "value": "option"}}
+
+        5️⃣ **VERIFY ACTION** (keywords: verify, assert, check, see, should, displayed, visible)
+           - Determine what to verify from intent
+           - ⚠️ CRITICAL: Use the EXACT text from the intent - DO NOT correct typos or spelling!
+           - If intent says "Header should be Swag lamb", use "Swag lamb" NOT "Swag Labs"
+           - Return: {{"action": "verify", "checks": [
+               {{"type": "element_visible", "locator": "#element"}},
+               {{"type": "url_contains", "value": "expected-url-part"}},
+               {{"type": "text_visible", "text": "EXACT text from intent - no corrections"}}
+           ]}}
+
+        6️⃣ **WAIT ACTION** (keywords: wait, pause)
+           - Return: {{"action": "wait", "locator": "#element-to-wait-for"}}
+
+        7️⃣ **HOVER ACTION** (keywords: hover, mouse over)
+           - Return: {{"action": "hover", "locator": "#element-selector"}}
+
+        8️⃣ **START_CAPTURE ACTION** (keywords: start capturing, intercept, listen to, monitor network, start network)
+           - Start capturing network/API calls
+           - Return: {{"action": "start_capture", "url_pattern": "**/*"}}
+           - For specific APIs: {{"action": "start_capture", "url_pattern": "**/api/*"}}
+
+        9️⃣ **VALIDATE_API ACTION** (keywords: validate api, api called, api returned, check api, verify api, network call)
+           - Validate that an API was called with expected result
+           - Extract URL pattern, method, status, and body requirements from intent
+           - Return: {{"action": "validate_api", "url_pattern": "**/api/login*", "method": "POST", "expected_status": 200, "expected_body_contains": "token"}}
+           - Minimal: {{"action": "validate_api", "url_pattern": "**/api/endpoint*"}}
+
+        🔟 **STOP_CAPTURE ACTION** (keywords: stop capturing, stop network, stop listening)
+           - Stop capturing network calls
+           - Return: {{"action": "stop_capture"}}
+
+        🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🔥 **CRITICAL**: Return ONLY a valid JSON object!
+
+        ✅ Single JSON action object
+        ✅ Use exact locators from provided elements when possible
+        ✅ Extract values EXACTLY as written in the intent - NO corrections, NO fixes, NO spelling corrections!
+        ✅ If the user wrote "Swag lamb", use "Swag lamb" - even if you think it's a typo
+
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations or comments
+        ❌ NO markdown code blocks
+        ❌ NO multiple actions
+        ❌ NO placeholders
+        ❌ NO correcting user's text/values - use EXACTLY what they wrote!
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE ACTION JSON NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_ui_step_verification_prompt(
+    step_intent: str, relevant_elements: list, page_url: str, page_title: str = ""
+) -> str:
+    """
+    Generate prompt for GitLab Duo to verify a 'Then verify' step.
+
+    Args:
+        step_intent: The verification intent
+        relevant_elements: Elements retrieved by IntentLocatorLibrary
+        page_url: Current page URL
+        page_title: Current page title
+    """
+
+    elements_str = "\n".join(
+        [f"  {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:15])]
+    )
+
+    return f"""
+        Your expertise: QA validation, UI testing, and page state verification.
+
+        📋 **MISSION**: Verify if the current page state matches the expected condition.
+
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🌐 CURRENT PAGE STATE:
+        URL: {page_url}
+        Title: {page_title}
+
+        ✅ VERIFICATION REQUIRED:
+        {step_intent}
+
+        🎯 ELEMENTS FOUND ON PAGE:
+        {elements_str}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        ⚡ **VERIFICATION LOGIC** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Analyze what needs to be verified:
+        1. Check if current URL matches expected page
+        2. Check if expected elements are present
+        3. Check if expected text is visible
+        4. Consider the intent's expectation
+
+        🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Return ONLY a valid JSON object:
+        {{
+          "success": true/false,
+          "reason": "Brief explanation",
+          "evidence": ["Evidence 1", "Evidence 2"]
+        }}
+
+        Examples:
+        - Pass: {{"success": true, "reason": "Inventory page displayed with products", "evidence": ["URL contains inventory", "6 products visible"]}}
+        - Fail: {{"success": false, "reason": "Still on login page with error", "evidence": ["URL is /", "Error message visible"]}}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_ui_step_retry_prompt(
+    step_intent: str,
+    failed_action: dict,
+    error: str,
+    relevant_elements: list,
+    page_url: str,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to fix a failed UI step.
+
+    Args:
+        step_intent: Original step intent
+        failed_action: The action that failed
+        error: Error message
+        relevant_elements: Fresh elements from current page
+        page_url: Current page URL
+    """
+
+    elements_str = "\n".join(
+        [f"  {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:10])]
+    )
+
+    return f"""
+        Your expertise: Playwright debugging, selector fixing, and UI automation.
+
+        📋 **MISSION**: Fix the failed action by finding a better locator.
+
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        📝 STEP INTENT:
+        {step_intent}
+
+        ❌ FAILED ACTION:
+        {failed_action}
+
+        🔴 ERROR:
+        {error}
+
+        🌐 CURRENT PAGE:
+        URL: {page_url}
+
+        🎯 FRESH ELEMENTS FROM PAGE:
+        {elements_str}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        ⚡ **FIX STRATEGY** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1. Analyze why the locator failed (not found, not visible, etc.)
+        2. Find a better matching element from the fresh elements list
+        3. Use data-test, id, or unique class attributes when possible
+        4. Return corrected action with new locator
+
+        ⚠️ **CRITICAL CONSTRAINTS** ⚠️
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🚫 You may ONLY fix the LOCATOR/SELECTOR - NOT the values or text!
+        🚫 If the failed action checks for text "Swag lamb", you MUST keep "Swag lamb"
+        🚫 Do NOT change: "value", "text", "expected" fields - these come from user's intent
+        � If the text/value in user's intent doesn't exist on page, the action SHOULD FAIL
+        
+        ✅ You CAN change: "locator", "selector" - to find the correct element
+        ✅ If there's no way to fix the locator, return the original action unchanged
+
+        �🚨 **OUTPUT REQUIREMENTS** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Return ONLY the corrected JSON action object (same format as failed action).
+        DO NOT change any text/value fields from the original action!
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_ui_step_failure_analysis_prompt(
+    step_intent: str,
+    step_type: str,
+    failed_action: dict,
+    error: str,
+    relevant_elements: list,
+    page_url: str,
+    page_title: str = "",
+    previous_steps: list = None,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to analyze why a step failed.
+
+    Args:
+        step_intent: The step text that failed
+        step_type: Given/When/Then/And
+        failed_action: The action that was attempted
+        error: Error message from execution
+        relevant_elements: Elements found on page
+        page_url: Current page URL
+        page_title: Current page title
+        previous_steps: List of previously executed steps
+    """
+
+    elements_str = "\n".join(
+        [f"  {i+1}. {elem[:400]}" for i, elem in enumerate(relevant_elements[:15])]
+    )
+
+    previous_context = ""
+    if previous_steps:
+        prev_str = "\n".join(
+            [
+                f"  - [{s.get('step_type', '')}] {s.get('intent', '')}: {s.get('status', 'pending')}"
+                for s in previous_steps
+            ]
+        )
+        previous_context = f"\n## All Previous Steps\n{prev_str}\n"
+
+    return f"""
+        Your expertise: QA failure analysis, debugging, and root cause identification.
+
+        📋 **MISSION**: Analyze why this UI test step failed and provide a detailed explanation.
+
+        📥 **FAILURE CONTEXT**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🔴 FAILED STEP:
+        Type: {step_type}
+        Intent: {step_intent}
+
+        🎯 ACTION ATTEMPTED:
+        {failed_action}
+
+        ❌ ERROR MESSAGE:
+        {error}
+        {previous_context}
+        🌐 CURRENT PAGE STATE:
+        URL: {page_url}
+        Title: {page_title}
+
+        📄 PAGE ELEMENTS (relevant to the intent):
+        {elements_str}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        ⚡ **ANALYSIS REQUIRED** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Please analyze and provide:
+
+        1️⃣ **ROOT CAUSE**: What is the most likely reason for the failure?
+           - Element not found on page?
+           - Element found but not matching expected state?
+           - Wrong locator generated?
+           - Page not in expected state?
+           - Timing/loading issue?
+           - Test data mismatch?
+
+        2️⃣ **EVIDENCE**: What evidence from the page elements supports your analysis?
+           - Compare expected vs actual elements on page
+           - Note any discrepancies
+
+        3️⃣ **EXPECTED VS ACTUAL**:
+           - What did the test expect to find/verify?
+           - What is actually on the page?
+
+        4️⃣ **RECOMMENDATION**: How could this be fixed?
+           - Is this a test bug or application bug?
+           - Suggested fix
+
+        🚨 **OUTPUT FORMAT** 🚨
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Return a JSON object with the following structure:
+        {{
+            "root_cause": "Brief description of why it failed",
+            "failure_type": "element_not_found|wrong_state|data_mismatch|timing|test_bug|app_bug",
+            "expected": "What the test expected",
+            "actual": "What was actually found on the page",
+            "evidence": ["Evidence point 1", "Evidence point 2"],
+            "recommendation": "How to fix this issue",
+            "is_test_issue": true/false
+        }}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """

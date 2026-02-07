@@ -407,3 +407,127 @@ def db_context():
     log.section("FIXTURE: Closing DB Connection")
     db.close()
     log.section("FIXTURE: DB Context cleanup complete")
+
+
+# ==================== UI CONTEXT FIXTURES ====================
+
+
+@pytest.fixture(scope="session")
+def ui_context():
+    """
+    Session-scoped fixture to initialize RAG for UI learning.
+
+    This fixture:
+    1. Creates a RAG instance for UI context
+    2. Creates or retrieves 'ui_learning' collection
+    3. Returns the RAG instance for storing successful UI step executions
+
+    Environment Variables:
+        REFRESH_UI_LEARNING: If "true", clears existing UI learning data
+
+    Usage in tests:
+        def test_ui_intent(ui_context, ui_page):
+            result = ui_page.execute_by_intent(
+                intent=\"\"\"
+                Given I am on the login page
+                When I fill username with standard_user
+                Then I should see the inventory page
+                \"\"\",
+                rag_context=ui_context
+            )
+            assert result["success"] is True
+    """
+    from Libs.RAG import Rag
+
+    log.section("FIXTURE: Initializing UI Context (RAG for Learning)")
+
+    # Initialize RAG for UI context
+    rag = Rag()
+
+    # Check if we need to refresh learning data
+    refresh_learning = os.getenv("REFRESH_UI_LEARNING", "false").lower() == "true"
+
+    try:
+        # Get or create UI learning collection
+        if refresh_learning:
+            log.info("REFRESH_UI_LEARNING=true: Clearing existing UI learning data")
+            try:
+                rag.chroma_client.delete_collection("ui_learning")
+                log.ok("Existing UI learning collection deleted")
+            except Exception:
+                pass  # Collection may not exist
+
+        # Use the RAG's embedding function for consistency
+        collection = rag.chroma_client.get_or_create_collection(
+            name="ui_learning", embedding_function=rag.embedding_fn
+        )
+        log.ok(f"UI learning collection ready ({collection.count()} documents)")
+
+        # Store collection reference on RAG for add_texts method
+        rag._ui_learning_collection = collection
+
+    except Exception as e:
+        log.warning(f"Failed to initialize UI learning collection: {e}")
+        # Create a minimal collection without embedding function as fallback
+        try:
+            rag._ui_learning_collection = rag.chroma_client.get_or_create_collection(
+                name="ui_learning"
+            )
+        except Exception:
+            rag._ui_learning_collection = None
+
+    # Store in builtins for global access
+    builtins.RAG_UI_INSTANCE = rag
+    log.ok("RAG UI instance stored in builtins.RAG_UI_INSTANCE")
+
+    yield rag
+
+    log.section("FIXTURE: UI Context cleanup complete")
+
+
+@pytest.fixture(scope="function")
+def ui_page(browser_instance, ui_context):
+    """
+    Function-scoped fixture for UI intent-based testing.
+
+    This fixture provides a fresh BasePage instance for each test,
+    with the RAG context for learning.
+
+    Unlike the authenticated 'page' fixture, this starts from a clean state
+    suitable for testing login flows.
+
+    Usage in tests:
+        @pytest.mark.id("UI-001")
+        @pytest.mark.title("Login Flow")
+        def test_login_flow(ui_page, ui_context):
+            result = ui_page.execute_by_intent(
+                intent=\"\"\"
+                Given I am on the login page
+                When I fill username with standard_user
+                And I fill password with secret_sauce
+                And I click login button
+                Then I should see the inventory page
+                \"\"\",
+                rag_context=ui_context
+            )
+            assert result["success"] is True
+    """
+    from Logic.UI.BasePage import BasePage
+
+    log.section("FIXTURE: Creating UI Page (Fresh Context)")
+
+    # Create a fresh context without authentication
+    context = browser_instance.new_context(viewport={"width": 1920, "height": 1080})
+    page = context.new_page()
+
+    # Create BasePage instance
+    base_page = BasePage(page)
+
+    log.ok("UI Page ready for intent-based testing")
+
+    yield base_page
+
+    # Cleanup
+    page.close()
+    context.close()
+    log.ok("UI Page closed")

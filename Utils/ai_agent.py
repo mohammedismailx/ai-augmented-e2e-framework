@@ -17,6 +17,10 @@ from Resources.prompts import (
     get_db_query_generation_prompt,
     get_db_query_analysis_prompt,
     get_db_query_retry_prompt,
+    get_ui_step_action_prompt,
+    get_ui_step_verification_prompt,
+    get_ui_step_retry_prompt,
+    get_ui_step_failure_analysis_prompt,
 )
 from Libs.IntentLocatorLibrary import IntentLocatorLibrary
 from Libs.IntentQueriesLibrary import IntentQueriesLibrary
@@ -85,6 +89,44 @@ class AIAgent:
                 kwargs.get("schema_context"),
                 kwargs.get("correct_examples", ""),
                 kwargs.get("incorrect_examples", ""),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "UI_STEP_ACTION":
+            return self.execute_ui_step_action_context(
+                kwargs.get("step_intent"),
+                kwargs.get("step_type"),
+                kwargs.get("relevant_elements"),
+                kwargs.get("page_url"),
+                kwargs.get("previous_steps"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "UI_STEP_VERIFICATION":
+            return self.execute_ui_step_verification_context(
+                kwargs.get("step_intent"),
+                kwargs.get("relevant_elements"),
+                kwargs.get("page_url"),
+                kwargs.get("page_title", ""),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "UI_STEP_RETRY":
+            return self.execute_ui_step_retry_context(
+                kwargs.get("step_intent"),
+                kwargs.get("failed_action"),
+                kwargs.get("error"),
+                kwargs.get("relevant_elements"),
+                kwargs.get("page_url"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "UI_STEP_FAILURE_ANALYSIS":
+            return self.execute_ui_step_failure_analysis_context(
+                kwargs.get("step_intent"),
+                kwargs.get("step_type"),
+                kwargs.get("failed_action"),
+                kwargs.get("error"),
+                kwargs.get("relevant_elements"),
+                kwargs.get("page_url"),
+                kwargs.get("page_title", ""),
+                kwargs.get("previous_steps"),
                 kwargs.get("return_prompt", False),
             )
         return None
@@ -544,3 +586,238 @@ class AIAgent:
             return None
 
         return None
+
+    # =========================================================================
+    # UI INTENT-BASED EXECUTION METHODS
+    # =========================================================================
+
+    def execute_ui_step_action_context(
+        self,
+        step_intent: str,
+        step_type: str,
+        relevant_elements: list,
+        page_url: str,
+        previous_steps: list = None,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate action for a single UI step using GitLab Duo.
+
+        Args:
+            step_intent: The step text (e.g., "fill username with standard_user")
+            step_type: Given/When/Then/And
+            relevant_elements: Elements retrieved by IntentLocatorLibrary
+            page_url: Current page URL
+            previous_steps: List of previously executed steps for context
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            JSON action object or prompt string
+        """
+        prompt = get_ui_step_action_prompt(
+            step_intent=step_intent,
+            step_type=step_type,
+            relevant_elements=relevant_elements or [],
+            page_url=page_url,
+            previous_steps=previous_steps,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert Playwright automation engineer..."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="ui_step.json",
+            constraints="Return ONLY valid JSON action object",
+            backstory="You are an expert in browser automation...",
+        )
+
+        return self._parse_json_response(response)
+
+    def execute_ui_step_verification_context(
+        self,
+        step_intent: str,
+        relevant_elements: list,
+        page_url: str,
+        page_title: str = "",
+        return_prompt: bool = False,
+    ):
+        """
+        Verify a 'Then' step using GitLab Duo.
+
+        Args:
+            step_intent: The verification intent
+            relevant_elements: Elements retrieved by IntentLocatorLibrary
+            page_url: Current page URL
+            page_title: Current page title
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            Verification result dict or prompt string
+        """
+        prompt = get_ui_step_verification_prompt(
+            step_intent=step_intent,
+            relevant_elements=relevant_elements or [],
+            page_url=page_url,
+            page_title=page_title,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation("You are an expert QA validation engineer...")
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="ui_verification.json",
+            constraints="Return ONLY valid JSON verification result",
+            backstory="You are an expert in UI testing...",
+        )
+
+        return self._parse_json_response(response)
+
+    def execute_ui_step_retry_context(
+        self,
+        step_intent: str,
+        failed_action: dict,
+        error: str,
+        relevant_elements: list,
+        page_url: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Fix a failed UI step using GitLab Duo.
+
+        Args:
+            step_intent: Original step intent
+            failed_action: The action that failed
+            error: Error message
+            relevant_elements: Fresh elements from current page
+            page_url: Current page URL
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            Fixed action dict or prompt string
+        """
+        prompt = get_ui_step_retry_prompt(
+            step_intent=step_intent,
+            failed_action=failed_action,
+            error=error,
+            relevant_elements=relevant_elements or [],
+            page_url=page_url,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert Playwright debugging engineer..."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="ui_retry.json",
+            constraints="Return ONLY valid JSON corrected action",
+            backstory="You are an expert in fixing selectors...",
+        )
+
+        return self._parse_json_response(response)
+
+    def execute_ui_step_failure_analysis_context(
+        self,
+        step_intent: str,
+        step_type: str,
+        action_attempted: dict,
+        error_message: str,
+        relevant_elements: list,
+        page_url: str,
+        page_html_snippet: str = None,
+        previous_steps: list = None,
+        return_prompt: bool = False,
+    ):
+        """
+        Analyze a failed UI step comprehensively using GitLab Duo.
+
+        This is an extra analysis layer called when a step fails after retry,
+        providing detailed insights into why the step failed and how to fix it.
+
+        Args:
+            step_intent: The original step intent (e.g., "Then I should see 'Swag Labs' on the page")
+            step_type: The type of step (Given/When/Then/And)
+            action_attempted: The action that was attempted (dict with action_type, selector, etc.)
+            error_message: The error message from the failed execution
+            relevant_elements: Elements retrieved by IntentLocatorLibrary
+            page_url: Current page URL
+            page_html_snippet: Optional snippet of page HTML for context (used as page_title fallback)
+            previous_steps: List of previously executed steps for context
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            Analysis dict with root_cause, suggestions, element_analysis, etc.
+            or prompt string if return_prompt=True
+        """
+        prompt = get_ui_step_failure_analysis_prompt(
+            step_intent=step_intent,
+            step_type=step_type,
+            failed_action=action_attempted,
+            error=error_message,
+            relevant_elements=relevant_elements or [],
+            page_url=page_url,
+            page_title=page_html_snippet or "",  # Use snippet as title fallback
+            previous_steps=previous_steps or [],
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert test automation failure analyst with deep knowledge of "
+            "Playwright, web technologies, and debugging techniques. You analyze failed "
+            "UI test steps and provide comprehensive insights."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="ui_failure_analysis.json",
+            constraints="Return ONLY valid JSON analysis with root_cause, suggestions, and element_analysis",
+            backstory="You are a senior QA engineer specializing in diagnosing test failures...",
+        )
+
+        return self._parse_json_response(response)
+
+    def _parse_json_response(self, response: str) -> dict:
+        """
+        Parse JSON from AI response, handling markdown code blocks.
+
+        Args:
+            response: Raw AI response string
+
+        Returns:
+            Parsed dict or None if parsing fails
+        """
+        if not response:
+            return None
+
+        try:
+            # Clean up response
+            cleaned = response.strip()
+
+            # Remove markdown code blocks
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            elif cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+
+            cleaned = cleaned.strip()
+
+            return json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            log.warning(f"Failed to parse JSON response: {e}")
+            log.debug(f"Raw response: {response[:200]}...")
+            return None

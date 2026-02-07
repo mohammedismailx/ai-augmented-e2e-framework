@@ -474,7 +474,7 @@ class AIAgent:
                           or (analysis, prompt) if return_prompt=True
         """
         self._initialize_conversation(
-            "You are an expert database analyst specializing in query result validation."
+            "You are an expert database analyst. Analyze query results and return JSON only."
         )
 
         goal = get_db_query_analysis_prompt(intent, sql_query, result)
@@ -482,96 +482,36 @@ class AIAgent:
         analysis_response = self._prompt_agent(
             goal,
             file_name="query_analysis.json",
-            constraints='Return ONLY {"success": true/false, "reason": "explanation"}',
+            constraints='Return ONLY {"success": true/false, "reason": "your analysis"}',
             backstory="You are an expert in database result analysis.",
         )
 
-        # Parse the analysis response
-        try:
-            if analysis_response:
-                # Try to extract JSON from the response
-                import re
+        # Parse the analysis response - simple JSON extraction
+        analysis = {"success": False, "reason": "No response from AI agent"}
 
-                # Find the last occurrence of {"success" - this is the actual AI response
-                json_start = analysis_response.rfind('{"success"')
-                if json_start != -1:
-                    # Extract from {"success" to end and find the closing brace
-                    json_str = analysis_response[json_start:]
-                    brace_count = 0
-                    json_end = 0
-                    for i, char in enumerate(json_str):
-                        if char == "{":
-                            brace_count += 1
-                        elif char == "}":
-                            brace_count -= 1
-                            if brace_count == 0:
-                                json_end = i + 1
-                                break
-                    if json_end > 0:
-                        try:
-                            analysis = json.loads(json_str[:json_end])
-                            # Validate the analysis has required keys
-                            if "success" not in analysis:
-                                analysis["success"] = False
-                            # Check if AI returned placeholder text instead of actual analysis
-                            placeholder_phrases = [
-                                "explanation",
-                                "Describe exactly WHY",
-                                "YOUR specific analysis",
-                            ]
-                            reason = analysis.get("reason", "")
-                            if not reason or any(
-                                p in reason for p in placeholder_phrases
-                            ):
-                                # Generate a meaningful reason based on the result
-                                analysis["reason"] = (
-                                    "AI did not provide detailed analysis"
-                                )
-                        except json.JSONDecodeError:
-                            # Fallback regex pattern for simpler cases
-                            simple_pattern = r'"success"\s*:\s*(true|false)'
-                            reason_pattern = r'"reason"\s*:\s*"([^"]+)"'
+        if analysis_response:
+            import re
 
-                            success_match = re.search(
-                                simple_pattern, json_str, re.IGNORECASE
-                            )
-                            reason_match = re.search(
-                                reason_pattern, json_str, re.IGNORECASE
-                            )
-
-                            analysis = {
-                                "success": (
-                                    success_match.group(1).lower() == "true"
-                                    if success_match
-                                    else False
-                                ),
-                                "reason": (
-                                    reason_match.group(1)
-                                    if reason_match
-                                    else "Could not parse reason from response"
-                                ),
-                            }
-                    else:
-                        analysis = {
-                            "success": False,
-                            "reason": "Could not find complete JSON in response",
-                        }
-                else:
-                    # Last resort: try direct JSON parse
-                    try:
-                        analysis = json.loads(analysis_response)
-                    except json.JSONDecodeError:
-                        analysis = {
-                            "success": False,
-                            "reason": f"No JSON found in response: {analysis_response[:200]}",
-                        }
+            # Find JSON in response
+            json_match = re.search(
+                r'\{[^{}]*"success"\s*:\s*(true|false)[^{}]*"reason"\s*:\s*"([^"]+)"[^{}]*\}',
+                analysis_response,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if json_match:
+                analysis = {
+                    "success": json_match.group(1).lower() == "true",
+                    "reason": json_match.group(2),
+                }
             else:
-                analysis = {"success": False, "reason": "No response from AI agent"}
-        except json.JSONDecodeError:
-            analysis = {
-                "success": False,
-                "reason": f"Could not parse AI response: {analysis_response[:200] if analysis_response else 'None'}",
-            }
+                # Try direct JSON parse
+                try:
+                    analysis = json.loads(analysis_response)
+                except json.JSONDecodeError:
+                    analysis = {
+                        "success": False,
+                        "reason": f"Could not parse AI response",
+                    }
 
         if return_prompt:
             return analysis, goal

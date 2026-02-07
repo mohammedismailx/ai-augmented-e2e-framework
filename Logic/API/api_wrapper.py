@@ -7,6 +7,7 @@ import re
 import os
 from datetime import datetime
 from Resources.Constants import constants, endpoints, headers
+from Resources.prompts import get_api_endpoint_action_prompt
 from Utils.ai_agent import AIAgent
 
 # Import centralized logger
@@ -131,24 +132,31 @@ class APIWrapper:
 
         return self.process_api_response(response, exp_status_code, exp_body)
 
-    # ==================== INTENT-BASED API EXECUTION ====================
+    # ==================== INTENT-BASED API EXECUTION WITH LEARNING ====================
 
     def execute_by_intent(
-        self, intent: str, base_url: str = None, rag_instance=None, max_retries: int = 2
+        self,
+        intent: str,
+        resource: str = None,
+        base_url: str = None,
+        rag_instance=None,
+        max_retries: int = 2,
     ) -> dict:
         """
-        Execute an API call based on natural language intent using RAG + GitLab Duo.
+        Execute an API call based on natural language intent using ChromaDB Learning + RAG + GitLab Duo.
 
-        Flow:
-        1. Retrieve swagger context from RAG by intent
-        2. Build prompt with intent + swagger context + base_url
-        3. Call GitLab Duo to generate curl command
-        4. Execute curl via subprocess
-        5. Call GitLab Duo to analyze response
-        6. If failed, retry with error context
+        LEARNING FLOW (same pattern as UI):
+        1. RETRIEVE: Search "api_endpoint_learning" collection for stored action by intent
+           - If [correct] found → send stored_metadata to DUO for validation
+           - If not found or [incorrect] → proceed to swagger
+        2. SWAGGER: Retrieve endpoint context from "api_swagger" collection
+        3. DUO: Generate action metadata (action_key, method, endpoint, curl, etc.)
+        4. EXECUTE: Execute the generated curl command
+        5. STORE: Store result with [correct] (status != 404) or [incorrect] status
 
         Args:
             intent (str): Natural language intent (e.g., "delete book with id 5")
+            resource (str): API resource name (e.g., "books", "users"). If not provided, extracted from intent.
             base_url (str): Base URL for the API. Uses instance base_url if not provided.
             rag_instance: RAG instance with embedded swagger. Uses instance rag_instance if not provided.
             max_retries (int): Maximum number of retry attempts for failed curl execution
@@ -162,28 +170,39 @@ class APIWrapper:
         if rag_instance is None:
             rag_instance = self.rag_instance
 
-        # Initialize logger with API test type (reads test ID from builtins automatically)
+        # Extract resource from intent if not provided
+        if resource is None:
+            resource = self._extract_resource_from_intent(intent)
+
+        # Initialize logger with API test type
         logger = IntentLogger(test_type="API")
         logger.start_session(intent=intent)
 
         logger.log(f"\n{'='*100}")
-        logger.log(f"[INTENT EXECUTION] Starting intent-based API execution")
+        logger.log(
+            f"[INTENT EXECUTION WITH LEARNING] Starting intent-based API execution"
+        )
         logger.log(f"[INTENT] {intent}")
+        logger.log(f"[RESOURCE] {resource}")
         logger.log(f"[BASE URL] {base_url}")
         logger.log(f"{'='*100}")
 
         result = {
             "success": False,
             "intent": intent,
+            "resource": resource,
             "base_url": base_url,
             "curl_command": None,
             "status_code": None,
             "response_body": None,
+            "request_body": None,
             "analysis": None,
             "error": None,
             "retries": 0,
-            "prompts": {},  # Store prompts for logging
-            "responses": {},  # Store AI responses for logging
+            "learning_source": None,  # "stored" or "swagger"
+            "action_metadata": None,
+            "prompts": {},
+            "responses": {},
         }
 
         # Step 1: Get RAG instance
@@ -198,69 +217,119 @@ class APIWrapper:
                 return result
 
         # ============================================================================
-        # STEP 1: RAG - RETRIEVE SWAGGER CONTEXT
+        # STEP 1: RETRIEVE FROM LEARNING COLLECTION
         # ============================================================================
-        logger.log_section("[STEP 1] RAG - RETRIEVING SWAGGER CONTEXT")
-        swagger_contexts = rag_instance.retrieve_endpoints_by_intent(intent, top_k=1)
-
-        if not swagger_contexts:
-            result["error"] = f"No matching API endpoints found for intent: '{intent}'"
-            logger.log(f"[ERROR] {result['error']}")
-            logger.end_session()
-            return result
-
-        swagger_context = swagger_contexts[0]  # Get the best match
-        result["swagger_context"] = swagger_context
-        logger.log(f"\n[OK] Found swagger context ({len(swagger_context)} chars)")
-        logger.log_titled_block(
-            "SWAGGER CONTEXT RETRIEVED", swagger_context, max_chars=5000
+        logger.log_section(
+            "[STEP 1] CHROMADB - RETRIEVING FROM API LEARNING COLLECTION"
         )
+
+        stored_action = rag_instance.retrieve_api_action_for_intent(resource, intent)
+        stored_metadata = None
+        swagger_context = None
+
+        if stored_action["found"] and stored_action["status"] == "[correct]":
+            stored_metadata = stored_action["stored_metadata"]
+            result["learning_source"] = "stored"
+            logger.log(
+                f"\n[OK] Found [correct] stored action (match_score: {stored_action['match_score']:.3f})"
+            )
+            logger.log_titled_block(
+                "STORED METADATA", json.dumps(stored_metadata, indent=2), max_chars=3000
+            )
+        else:
+            if stored_action["found"]:
+                logger.log(
+                    f"\n[INFO] Found stored action but status is {stored_action['status']}, fetching swagger context..."
+                )
+            else:
+                logger.log(
+                    f"\n[INFO] No stored action found for this intent, fetching swagger context..."
+                )
+
+            # Retrieve swagger context
+            swagger_contexts = rag_instance.retrieve_endpoints_by_intent(
+                intent, top_k=1
+            )
+            if swagger_contexts:
+                swagger_context = swagger_contexts[0]
+                result["learning_source"] = "swagger"
+                logger.log(
+                    f"\n[OK] Found swagger context ({len(swagger_context)} chars)"
+                )
+                logger.log_titled_block(
+                    "SWAGGER CONTEXT", swagger_context, max_chars=3000
+                )
+            else:
+                result["error"] = (
+                    f"No matching API endpoints found for intent: '{intent}'"
+                )
+                logger.log(f"[ERROR] {result['error']}")
+                logger.end_session()
+                return result
 
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 2: GITLAB DUO - GENERATE CURL COMMAND
+        # STEP 2: GITLAB DUO - GENERATE API ACTION METADATA
         # ============================================================================
-        logger.log_section("[STEP 2] GITLAB DUO - GENERATING CURL COMMAND")
+        logger.log_section("[STEP 2] GITLAB DUO - GENERATING API ACTION METADATA")
+        logger.log(
+            f"[Source] Using {'stored metadata' if stored_metadata else 'swagger context'}"
+        )
         logger.log(f"[Sending request to GitLab Duo...]")
 
-        # Get both the response and the prompt
-        curl_result = self.ai_agent.run_agent_based_on_context(
-            context="SWAGGER_INTENT",
+        # Build the prompt
+        duo_prompt = get_api_endpoint_action_prompt(
+            resource=resource,
             intent=intent,
-            swagger_context=swagger_context,
+            swagger_context=swagger_context or "",
+            stored_metadata=stored_metadata,
             base_url=base_url,
-            return_prompt=True,
         )
 
-        if isinstance(curl_result, tuple):
-            curl_command, curl_prompt = curl_result
-        else:
-            curl_command = curl_result
-            curl_prompt = "(Prompt not available)"
+        result["prompts"]["action_generation"] = duo_prompt
+        logger.log_prompt(duo_prompt)
 
-        result["prompts"]["curl_generation"] = curl_prompt
-        result["responses"]["curl_generation"] = curl_command
+        # Call GitLab Duo
+        duo_response = self.ai_agent.run_agent_based_on_context(
+            context="API_ENDPOINT_ACTION", prompt=duo_prompt, return_prompt=False
+        )
 
-        # Log the prompt sent to GitLab Duo
-        logger.log_prompt(curl_prompt)
+        result["responses"]["action_generation"] = duo_response
+        logger.log_ai_response(duo_response)
 
-        if not curl_command:
-            result["error"] = "Failed to generate curl command from GitLab Duo"
+        if not duo_response:
+            result["error"] = "Failed to get action metadata from GitLab Duo"
             logger.log(f"[ERROR] {result['error']}")
             logger.end_session()
             return result
 
-        # Log the AI response
-        logger.log_ai_response(curl_command)
+        # Parse the action metadata from DUO response
+        action_metadata = self._parse_action_metadata(duo_response)
 
-        # Clean up the curl command (remove markdown code blocks if any)
+        if not action_metadata:
+            result["error"] = "Failed to parse action metadata from GitLab Duo response"
+            logger.log(f"[ERROR] {result['error']}")
+            logger.end_session()
+            return result
+
+        result["action_metadata"] = action_metadata
+        logger.log(f"\n[OK] Parsed action metadata:")
+        logger.log_titled_block(
+            "ACTION METADATA", json.dumps(action_metadata, indent=2), max_chars=3000
+        )
+
+        # Extract curl command from action metadata
+        curl_command = action_metadata.get("curl", "")
+        if not curl_command:
+            result["error"] = "No curl command in action metadata"
+            logger.log(f"[ERROR] {result['error']}")
+            logger.end_session()
+            return result
+
         curl_command = self._clean_curl_command(curl_command)
         result["curl_command"] = curl_command
-        logger.log(f"\n[OK] Cleaned curl command:")
-        logger.log_titled_block(
-            "GENERATED CURL COMMAND (CLEANED)", curl_command, max_chars=5000
-        )
+        result["request_body"] = action_metadata.get("request_body", {})
 
         logger.log_step_separator()
 
@@ -285,7 +354,6 @@ class APIWrapper:
                 logger.log(f"\n{'-'*40} CURL RESPONSE {'-'*40}")
                 logger.log(f"HTTP Status Code: {execution_result['status_code']}")
                 logger.log(f"\nResponse Body:")
-                # Try to pretty print JSON
                 try:
                     resp_json = json.loads(execution_result["stdout"])
                     formatted_resp = json.dumps(resp_json, indent=2)
@@ -308,7 +376,6 @@ class APIWrapper:
                 logger.log(f"Error: {error_msg}")
 
                 if attempt < max_retries:
-                    # Retry with error context
                     logger.log(
                         f"\n[RETRY] Asking GitLab Duo to fix the curl command..."
                     )
@@ -317,7 +384,7 @@ class APIWrapper:
                         intent=intent,
                         original_curl=curl_command,
                         error_output=error_msg,
-                        swagger_context=swagger_context,
+                        swagger_context=swagger_context or "",
                         base_url=base_url,
                         return_prompt=True,
                     )
@@ -352,9 +419,38 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 4: GITLAB DUO - ANALYZE RESPONSE
+        # STEP 4: STORE RESULT IN LEARNING COLLECTION
         # ============================================================================
-        logger.log_section("[STEP 4] GITLAB DUO - ANALYZING RESPONSE")
+        logger.log_section("[STEP 4] STORING RESULT IN API LEARNING COLLECTION")
+
+        # Determine status: [correct] if status != 404, else [incorrect]
+        actual_status = result["status_code"]
+        learning_status = (
+            "[correct]" if actual_status and actual_status != 404 else "[incorrect]"
+        )
+
+        logger.log(f"[Actual Status Code] {actual_status}")
+        logger.log(f"[Learning Status] {learning_status}")
+
+        # Store the action in ChromaDB
+        rag_instance.store_api_action_from_duo(
+            resource=resource,
+            duo_response=action_metadata,
+            status=learning_status,
+            curl=result["curl_command"],
+            actual_status=actual_status,
+            request_body=result["request_body"],
+            response_body=result["response_body"],
+        )
+
+        logger.log(f"[OK] Stored action with status {learning_status}")
+
+        logger.log_step_separator()
+
+        # ============================================================================
+        # STEP 5: GITLAB DUO - ANALYZE RESPONSE
+        # ============================================================================
+        logger.log_section("[STEP 5] GITLAB DUO - ANALYZING RESPONSE")
         logger.log(f"[Sending response to GitLab Duo for analysis...]")
 
         analysis_result = self.ai_agent.analyze_api_response(
@@ -375,12 +471,10 @@ class APIWrapper:
         result["prompts"]["analysis"] = analysis_prompt
         result["responses"]["analysis"] = analysis
 
-        # Log the prompt sent to GitLab Duo
         logger.log_prompt(analysis_prompt)
 
         result["analysis"] = analysis
 
-        # Log the AI response
         if analysis:
             logger.log_ai_response(analysis)
         else:
@@ -389,11 +483,10 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 5: PARSE ANALYSIS AND DETERMINE SUCCESS
+        # STEP 6: PARSE ANALYSIS AND DETERMINE SUCCESS
         # ============================================================================
-        logger.log_section("[STEP 5] PARSING AI ANALYSIS RESULT")
+        logger.log_section("[STEP 6] PARSING AI ANALYSIS RESULT")
 
-        # Parse the JSON analysis from GitLab Duo
         analysis_json = self._parse_analysis_json(analysis)
         result["analysis_result"] = analysis_json
 
@@ -419,19 +512,19 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 6: FINAL SUMMARY
+        # STEP 7: FINAL SUMMARY
         # ============================================================================
 
         # Log comprehensive summary
         summary_data = {
             "Intent": intent,
+            "Resource": resource,
             "Base URL": base_url,
-            "Swagger Context Found": (
-                f"Yes ({len(swagger_context)} chars)" if swagger_context else "No"
-            ),
+            "Learning Source": result["learning_source"],
             "Curl Command Generated": "Yes" if result["curl_command"] else "No",
             "HTTP Status Code": result["status_code"],
             "Retries Used": result["retries"],
+            "Learning Status Stored": learning_status,
             "API Response": (
                 result["response_body"][:200] + "..."
                 if result["response_body"] and len(result["response_body"]) > 200
@@ -450,6 +543,132 @@ class APIWrapper:
         logger.end_session()
 
         return result
+
+    def _extract_resource_from_intent(self, intent: str) -> str:
+        """
+        Extract API resource name from intent.
+
+        Examples:
+            "get all users" -> "users"
+            "create a new book" -> "books"
+            "delete user with id 5" -> "users"
+            "fetch products" -> "products"
+        """
+        # Common resource patterns
+        common_resources = [
+            "users",
+            "user",
+            "books",
+            "book",
+            "products",
+            "product",
+            "orders",
+            "order",
+            "items",
+            "item",
+            "posts",
+            "post",
+            "comments",
+            "comment",
+            "categories",
+            "category",
+            "login",
+            "auth",
+            "authentication",
+            "register",
+            "signup",
+            "accounts",
+            "account",
+            "customers",
+            "customer",
+            "employees",
+            "employee",
+        ]
+
+        intent_lower = intent.lower()
+
+        # Find the first matching resource in the intent
+        for resource in common_resources:
+            if resource in intent_lower:
+                # Normalize to plural form for consistency
+                if not resource.endswith("s") and resource not in [
+                    "login",
+                    "auth",
+                    "authentication",
+                    "register",
+                    "signup",
+                ]:
+                    return resource + "s"
+                return resource
+
+        # If no known resource found, try to extract from common patterns
+        import re
+
+        patterns = [
+            r"(?:get|fetch|retrieve|list|create|add|update|delete|remove)\s+(?:a\s+)?(?:new\s+)?(\w+)",
+            r"(\w+)\s+(?:with|by|for)\s+",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, intent_lower)
+            if match:
+                resource = match.group(1)
+                if len(resource) > 2:  # Avoid short words like "id", "by"
+                    return resource
+
+        # Default fallback
+        return "resource"
+
+    def _parse_action_metadata(self, duo_response: str) -> dict:
+        """
+        Parse action metadata JSON from GitLab Duo response.
+
+        Args:
+            duo_response: Raw response string from GitLab Duo
+
+        Returns:
+            dict: Parsed action metadata or None if parsing fails
+        """
+        if not duo_response:
+            return None
+
+        try:
+            # Try direct JSON parse
+            return json.loads(duo_response.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON from markdown code blocks
+        json_patterns = [
+            r"```json\s*(.*?)\s*```",
+            r"```\s*(.*?)\s*```",
+            r'\{[^{}]*"action_key"[^{}]*\}',
+        ]
+
+        for pattern in json_patterns:
+            matches = re.findall(pattern, duo_response, re.DOTALL | re.IGNORECASE)
+            for match in matches:
+                try:
+                    json_str = match.strip() if isinstance(match, str) else match
+                    parsed = json.loads(json_str)
+                    if "action_key" in parsed or "curl" in parsed:
+                        return parsed
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+        # Try to find JSON object with required keys
+        try:
+            start = duo_response.find("{")
+            end = duo_response.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                potential_json = duo_response[start : end + 1]
+                parsed = json.loads(potential_json)
+                if isinstance(parsed, dict):
+                    return parsed
+        except json.JSONDecodeError:
+            pass
+
+        return None
 
     def _parse_analysis_json(self, analysis: str) -> dict:
         """

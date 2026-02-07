@@ -156,7 +156,7 @@ class BasePage:
         self.page.wait_for_selector(locator, state="visible", timeout=timeout)
 
     # =========================================================================
-    # INTENT-BASED EXECUTION
+    # INTENT-BASED EXECUTION WITH RAG LEARNING
     # =========================================================================
 
     # Top K elements to retrieve per action type
@@ -175,31 +175,38 @@ class BasePage:
     # Actions that mark HTML as dirty (need refresh)
     DIRTY_ACTIONS = {"navigate", "click"}
 
+    # Maximum retry attempts (Trial 1: RAG, Trial 2: Live HTML)
+    MAX_TRIALS = 2
+
     def execute_by_intent(self, intent: str, rag_context=None) -> dict:
         """
-        Execute UI test by Gherkin-style intent.
+        Execute UI test by Gherkin-style intent with RAG-based learning.
+
+        NEW ALGORITHM (Simplified DUO-Centric Flow):
+        =============================================
+        For each step:
+        1. Extract module from current URL (e.g., /inventory -> "inventory")
+        2. Retrieve from ChromaDB by module + intent
+           - If found [correct] → send stored_metadata to DUO
+           - If not found or [incorrect] → get live HTML elements, send to DUO
+        3. DUO returns FULL metadata dict (same format as stored):
+           {
+               "action_key": "click_login",
+               "intent": "...",
+               "action_type": "click",
+               "locator": "#login-btn",
+               "action_json": {...},
+               "playwright_code": "page.click('#login-btn')"
+           }
+        4. Extract playwright_code from DUO response, execute
+        5. Mark status [correct] or [incorrect], store in ChromaDB
 
         Args:
-            intent: Multi-line Gherkin steps:
-                Given I am on the login page
-                When I fill username with standard_user
-                And I fill password with secret_sauce
-                And I click login button
-                Then I should see the inventory page
-
-            rag_context: Optional RAG context for learning (ui_context fixture)
+            intent: Multi-line Gherkin steps
+            rag_context: RAG instance for learning storage
 
         Returns:
-            dict with execution results:
-            {
-                "success": True/False,
-                "intent": "original intent",
-                "steps": [
-                    {"step_type": "Given", "intent": "...", "status": "passed", "action": {...}},
-                    ...
-                ],
-                "error": "error message if failed"
-            }
+            dict with execution results
         """
         logger = IntentLogger(test_type="UI")
         logger.start_session(intent)
@@ -225,189 +232,323 @@ class BasePage:
             # Initialize IntentLocatorLibrary
             intent_locator = IntentLocatorLibrary()
 
-            # Get initial HTML and mark as clean
-            html_content = self._get_page_html()
-            html_dirty = False
-
             # Execute each step
             previous_steps = []
-            for step in steps:
+            for step_idx, step in enumerate(steps):
                 step_type = step["type"]
                 step_intent = step["intent"]
 
-                logger.log_section(f"STEP: [{step_type}] {step_intent}")
+                logger.log_section(f"STEP {step_idx + 1}: [{step_type}] {step_intent}")
 
                 step_result = {
                     "step_type": step_type,
                     "intent": step_intent,
                     "status": "pending",
-                    "action": None,
+                    "duo_response": None,
+                    "source": None,  # "stored_metadata" or "live_html"
                 }
 
                 try:
-                    # Refresh HTML if dirty
-                    if html_dirty:
-                        logger.log("[HTML] Refreshing page HTML (dirty flag set)")
-                        html_content = self._get_page_html()
-                        html_dirty = False
+                    # === STEP 1: Extract module from current URL ===
+                    current_url = self.page.url
+                    current_module = self._extract_module_from_url(current_url)
+                    logger.log(f"[MODULE] {current_module} (from {current_url})")
 
-                    # Get action type hint for top_k
+                    # Get action type hint for element retrieval
                     action_hint = self._guess_action_type(step_intent)
                     top_k = self.TOP_K_BY_ACTION.get(
                         action_hint, self.TOP_K_BY_ACTION["default"]
                     )
 
-                    # Get relevant elements using IntentLocatorLibrary
-                    relevant_elements = []
-                    if top_k > 0 and html_content:
-                        relevant_elements = (
-                            intent_locator.find_elements_outerhtml_with_score_backoff(
+                    # Check if this is a network action (skip RAG for network actions)
+                    is_network_action = action_hint == "network"
+
+                    stored_metadata = None
+                    relevant_elements = None
+                    source = "live_html"
+
+                    # === STEP 2: Retrieve from ChromaDB ===
+                    if not is_network_action and rag_context:
+                        rag_result = rag_context.retrieve_ui_action_for_intent(
+                            current_module, step_intent
+                        )
+
+                        if (
+                            rag_result.get("found")
+                            and rag_result.get("status") == "[correct]"
+                        ):
+                            # Found [correct] action - send stored metadata to DUO
+                            stored_metadata = rag_result.get("stored_metadata")
+                            source = "stored_metadata"
+
+                            # Log retrieval success
+                            logger.log_rag_retrieval(
+                                module=current_module,
+                                found=True,
+                                status="[correct]",
+                                action_key=stored_metadata.get("action_key"),
+                                match_score=rag_result.get("match_score", 0),
+                            )
+
+                            # Log full stored metadata
+                            logger.log_stored_metadata(stored_metadata)
+                        else:
+                            # Not found or [incorrect] - get live HTML
+                            logger.log_rag_retrieval(
+                                module=current_module,
+                                found=False,
+                                status=rag_result.get("status"),
+                            )
+
+                    # === STEP 3: Get live HTML elements if needed ===
+                    if stored_metadata is None and top_k > 0:
+                        logger.log(f"\n[HTML] Getting live page elements...")
+                        html_content = self._get_page_html()
+
+                        if html_content:
+                            relevant_elements = intent_locator.find_elements_outerhtml_with_score_backoff(
                                 html_or_path=html_content,
                                 intent_str=step_intent,
                                 top_k=top_k,
                                 start=0.5,
                                 min_floor=0.05,
                             )
-                        )
-                        logger.log(
-                            f"[ELEMENTS] Found {len(relevant_elements)} relevant elements for intent"
-                        )
+                            logger.log(
+                                f"[HTML] Found {len(relevant_elements)} relevant elements"
+                            )
 
-                    # Get action from AI
-                    action = self.ai_agent.run_agent_based_on_context(
-                        context="UI_STEP_ACTION",
+                            # Log live HTML elements
+                            logger.log_live_html_elements(relevant_elements)
+                        else:
+                            logger.log(f"[HTML] Failed to get page HTML")
+
+                    # === STEP 4: Send to DUO (GitLab Duo AI) ===
+                    logger.log_duo_request(
+                        source=source,
+                        module=current_module,
                         step_intent=step_intent,
                         step_type=step_type,
+                    )
+
+                    # Get the prompt that will be sent to DUO
+                    duo_prompt = self.ai_agent.run_agent_based_on_context(
+                        context="UI_MODULE_ACTION",
+                        step_intent=step_intent,
+                        step_type=step_type,
+                        module=current_module,
+                        page_url=current_url,
+                        stored_metadata=stored_metadata,
                         relevant_elements=relevant_elements,
-                        page_url=self.page.url,
+                        previous_steps=previous_steps,
+                        return_prompt=True,  # Get prompt first
+                    )
+
+                    # Log the prompt being sent
+                    logger.log_duo_prompt(duo_prompt)
+
+                    # Now actually call DUO
+                    logger.log(f"\n[DUO] Sending to GitLab Duo...")
+
+                    duo_response = self.ai_agent.run_agent_based_on_context(
+                        context="UI_MODULE_ACTION",
+                        step_intent=step_intent,
+                        step_type=step_type,
+                        module=current_module,
+                        page_url=current_url,
+                        stored_metadata=stored_metadata,
+                        relevant_elements=relevant_elements,
                         previous_steps=previous_steps,
                     )
 
-                    if not action:
-                        raise Exception("AI failed to generate action")
+                    if not duo_response:
+                        raise Exception("DUO failed to generate action metadata")
 
-                    step_result["action"] = action
-                    logger.log(f"[ACTION] Generated: {json.dumps(action)}")
+                    # Log full DUO response
+                    logger.log_duo_response(duo_response)
 
-                    # Execute the action
-                    success = self._execute_action(action, logger)
+                    step_result["duo_response"] = duo_response
+                    step_result["source"] = source
 
-                    # Check if this is a network action (no retry for network actions)
-                    action_type = action.get("action", "")
-                    is_network_action = action_type in [
-                        "start_capture",
-                        "stop_capture",
-                        "validate_api",
-                        "clear_capture",
-                    ]
+                    # === STEP 5: Execute action using action_json ===
+                    action_json = duo_response.get("action_json", {})
+                    if isinstance(action_json, str):
+                        try:
+                            action_json = json.loads(action_json)
+                        except:
+                            action_json = {}
 
-                    if not success and not is_network_action:
-                        # Try retry once (only for non-network actions)
-                        logger.log("[RETRY] Action failed, attempting self-healing...")
+                    logger.log(f"\n[EXECUTE] Executing action...")
+                    success = self._execute_action(action_json, logger)
 
-                        # Refresh HTML for retry
-                        html_content = self._get_page_html()
+                    action_type = duo_response.get("action_type", "")
+                    locator = duo_response.get("locator", "")
 
-                        # Get fresh elements
-                        fresh_elements = (
-                            intent_locator.find_elements_outerhtml_with_score_backoff(
-                                html_or_path=html_content,
-                                intent_str=step_intent,
-                                top_k=top_k * 2,  # Get more elements for retry
-                                start=0.5,
-                                min_floor=0.03,
+                    if success:
+                        step_result["status"] = "passed"
+                        logger.log(f"[RESULT] [{step_type}] PASSED")
+
+                        # === STORE [correct] IN CHROMADB ===
+                        if rag_context and not is_network_action:
+                            logger.log_store_action(
+                                module=current_module,
+                                action_key=duo_response.get("action_key"),
+                                status="[correct]",
+                                locator=duo_response.get("locator"),
+                                playwright_code=duo_response.get("playwright_code"),
                             )
-                        )
 
-                        # Get fixed action from AI
-                        fixed_action = self.ai_agent.run_agent_based_on_context(
-                            context="UI_STEP_RETRY",
-                            step_intent=step_intent,
-                            failed_action=action,
-                            error="Action execution failed",
-                            relevant_elements=fresh_elements,
-                            page_url=self.page.url,
-                        )
+                            rag_context.store_ui_action_from_duo(
+                                module=current_module,
+                                duo_response=duo_response,
+                                status="[correct]",
+                                url=current_url,
+                            )
 
-                        if fixed_action:
-                            step_result["action"] = fixed_action
+                        # Mark HTML dirty if needed
+                        if action_type in self.DIRTY_ACTIONS:
+                            time.sleep(0.5)  # Small wait for page to update
+
+                    else:
+                        # === ACTION FAILED ===
+                        logger.log(f"[EXECUTE] Action failed")
+
+                        # If we used stored_metadata, try again with live HTML
+                        if source == "stored_metadata" and not is_network_action:
                             logger.log(
-                                f"[RETRY] Fixed action: {json.dumps(fixed_action)}"
+                                f"\n[RETRY] Stored action failed, trying with live HTML..."
                             )
-                            success = self._execute_action(fixed_action, logger)
 
-                    if not success:
-                        # For network actions, provide better error message
-                        if is_network_action:
-                            raise Exception(
-                                f"Network validation failed for: {action.get('url_pattern', 'unknown')}"
+                            # Mark old action as [incorrect] in store
+                            if rag_context:
+                                logger.log_store_action(
+                                    module=current_module,
+                                    action_key=duo_response.get("action_key"),
+                                    status="[incorrect]",
+                                    context="MARKING ACTION AS INCORRECT",
+                                )
+
+                                rag_context.store_ui_action_from_duo(
+                                    module=current_module,
+                                    duo_response=duo_response,
+                                    status="[incorrect]",
+                                    url=current_url,
+                                )
+
+                            # Get live HTML elements
+                            html_content = self._get_page_html()
+                            if html_content:
+                                relevant_elements = intent_locator.find_elements_outerhtml_with_score_backoff(
+                                    html_or_path=html_content,
+                                    intent_str=step_intent,
+                                    top_k=top_k * 2,
+                                    start=0.5,
+                                    min_floor=0.05,
+                                )
+
+                                # Log retry elements
+                                logger.log_live_html_elements(
+                                    relevant_elements, is_retry=True
+                                )
+
+                            # Send to DUO again with live HTML
+                            logger.log(f"[RETRY] Sending to DUO with live HTML...")
+                            duo_response = self.ai_agent.run_agent_based_on_context(
+                                context="UI_MODULE_ACTION",
+                                step_intent=step_intent,
+                                step_type=step_type,
+                                module=current_module,
+                                page_url=current_url,
+                                stored_metadata=None,  # Force live HTML
+                                relevant_elements=relevant_elements,
+                                previous_steps=previous_steps,
                             )
+
+                            if duo_response:
+                                # Log retry DUO response
+                                logger.log_duo_response(duo_response, is_retry=True)
+
+                                step_result["duo_response"] = duo_response
+                                step_result["source"] = "live_html_retry"
+
+                                action_json = duo_response.get("action_json", {})
+                                if isinstance(action_json, str):
+                                    try:
+                                        action_json = json.loads(action_json)
+                                    except:
+                                        action_json = {}
+
+                                success = self._execute_action(action_json, logger)
+
+                                if success:
+                                    step_result["status"] = "passed"
+                                    logger.log(f"[RESULT] [{step_type}] PASSED (Retry)")
+
+                                    # Store as [correct]
+                                    if rag_context:
+                                        logger.log_store_action(
+                                            module=current_module,
+                                            action_key=duo_response.get("action_key"),
+                                            status="[correct]",
+                                            context="STORING RETRY ACTION AS CORRECT",
+                                        )
+
+                                        rag_context.store_ui_action_from_duo(
+                                            module=current_module,
+                                            duo_response=duo_response,
+                                            status="[correct]",
+                                            url=current_url,
+                                        )
+                                else:
+                                    # Store as [incorrect]
+                                    if rag_context:
+                                        logger.log_store_action(
+                                            module=current_module,
+                                            action_key=duo_response.get("action_key"),
+                                            status="[incorrect]",
+                                            context="STORING RETRY ACTION AS INCORRECT",
+                                        )
+
+                                        rag_context.store_ui_action_from_duo(
+                                            module=current_module,
+                                            duo_response=duo_response,
+                                            status="[incorrect]",
+                                            url=current_url,
+                                        )
+                                    raise Exception(
+                                        "Action execution failed after retry"
+                                    )
+                            else:
+                                raise Exception(
+                                    "DUO failed to generate action on retry"
+                                )
                         else:
-                            raise Exception("Action execution failed after retry")
+                            # First attempt with live HTML failed
+                            if rag_context and not is_network_action:
+                                logger.log_store_action(
+                                    module=current_module,
+                                    action_key=duo_response.get("action_key"),
+                                    status="[incorrect]",
+                                    context="STORING FAILED ACTION AS INCORRECT",
+                                )
 
-                    step_result["status"] = "passed"
-                    logger.log(f"[RESULT] [{step_type}] PASSED")
-
-                    # Mark HTML dirty if needed (use action_type from earlier)
-                    if action_type in self.DIRTY_ACTIONS:
-                        html_dirty = True
-                        time.sleep(0.5)  # Small wait for page to update
+                                rag_context.store_ui_action_from_duo(
+                                    module=current_module,
+                                    duo_response=duo_response,
+                                    status="[incorrect]",
+                                    url=current_url,
+                                )
+                            raise Exception("Action execution failed")
 
                 except Exception as e:
                     step_result["status"] = "failed"
                     step_result["error"] = str(e)
                     logger.log(f"[ERROR] [{step_type}] FAILED: {e}")
 
-                    # Run comprehensive failure analysis
-                    logger.log(
-                        "[ANALYSIS] Requesting failure analysis from GitLab Duo..."
+                    # Run failure analysis with duo_response
+                    duo_resp = step_result.get("duo_response", {})
+                    self._run_failure_analysis(
+                        step_intent, step_type, duo_resp, str(e), previous_steps, logger
                     )
-                    try:
-                        # Get page HTML snippet for analysis
-                        page_html_snippet = None
-                        try:
-                            page_html_snippet = self._get_page_html()[
-                                :5000
-                            ]  # First 5000 chars
-                        except:
-                            pass
-
-                        failure_analysis = self.ai_agent.run_agent_based_on_context(
-                            context="UI_STEP_FAILURE_ANALYSIS",
-                            step_intent=step_intent,
-                            step_type=step_type,
-                            action_attempted=action,
-                            error_message=str(e),
-                            relevant_elements=relevant_elements,
-                            page_url=self.page.url,
-                            page_html_snippet=page_html_snippet,
-                            previous_steps=previous_steps,
-                        )
-
-                        if failure_analysis:
-                            step_result["failure_analysis"] = failure_analysis
-                            logger.log(
-                                f"[ANALYSIS] Root Cause: {failure_analysis.get('root_cause', 'Unknown')}"
-                            )
-
-                            suggestions = failure_analysis.get("suggestions", [])
-                            if suggestions:
-                                logger.log("[ANALYSIS] Suggestions:")
-                                for i, suggestion in enumerate(suggestions[:3], 1):
-                                    logger.log(f"  {i}. {suggestion}")
-
-                            element_analysis = failure_analysis.get(
-                                "element_analysis", ""
-                            )
-                            if element_analysis:
-                                logger.log(
-                                    f"[ANALYSIS] Element Analysis: {element_analysis}"
-                                )
-
-                    except Exception as analysis_error:
-                        logger.log(
-                            f"[ANALYSIS] Could not generate failure analysis: {analysis_error}"
-                        )
 
                     result["error"] = f"Step failed: [{step_type}] {step_intent} - {e}"
                     result["steps"].append(step_result)
@@ -419,11 +560,11 @@ class BasePage:
 
             # All steps passed
             result["success"] = True
-            logger.log("[COMPLETE] All steps executed successfully")
+            logger.log("\n[COMPLETE] All steps executed successfully")
 
-            # Store learning if RAG context provided
+            # Print learning summary if RAG context available
             if rag_context:
-                self._store_learning(rag_context, intent, result)
+                self._print_learning_summary(rag_context, logger)
 
         except Exception as e:
             result["error"] = str(e)
@@ -431,6 +572,129 @@ class BasePage:
 
         logger.end_session()
         return result
+
+    def _extract_module_from_url(self, url: str) -> str:
+        """
+        Extract module name from URL path.
+
+        Examples:
+            https://www.saucedemo.com/ -> "home"
+            https://www.saucedemo.com -> "home"
+            https://www.saucedemo.com/inventory.html -> "inventory"
+            https://www.saucedemo.com/cart.html -> "cart"
+            about:blank -> "home"
+        """
+        from urllib.parse import urlparse
+
+        if not url:
+            return "home"
+
+        # Handle special URLs like about:blank
+        if url.startswith("about:") or url == "":
+            return "home"
+
+        try:
+            parsed = urlparse(url)
+            path = parsed.path.strip("/")
+
+            # No path means home page
+            if not path:
+                return "home"
+
+            # Remove .html extension
+            if path.endswith(".html"):
+                path = path[:-5]
+
+            # Get last segment
+            segments = path.split("/")
+            module = segments[-1] if segments else "home"
+
+            # Handle index pages or empty
+            if module in ("index", ""):
+                return "home"
+
+            return module if module else "home"
+
+        except Exception:
+            return "home"
+
+    def _run_failure_analysis(
+        self,
+        step_intent: str,
+        step_type: str,
+        duo_response: dict,
+        error: str,
+        previous_steps: list,
+        logger: IntentLogger,
+    ):
+        """Run failure analysis with GitLab Duo."""
+        logger.log("[ANALYSIS] Requesting failure analysis from GitLab Duo...")
+
+        try:
+            page_html_snippet = None
+            try:
+                page_html_snippet = self._get_page_html()[:5000]
+            except:
+                pass
+
+            # Extract action_json from duo_response for analysis
+            action_attempted = (
+                duo_response.get("action_json", duo_response) if duo_response else {}
+            )
+
+            failure_analysis = self.ai_agent.run_agent_based_on_context(
+                context="UI_STEP_FAILURE_ANALYSIS",
+                step_intent=step_intent,
+                step_type=step_type,
+                action_attempted=action_attempted,
+                error_message=error,
+                relevant_elements=[],
+                page_url=self.page.url,
+                page_html_snippet=page_html_snippet,
+                previous_steps=previous_steps,
+            )
+
+            if failure_analysis:
+                logger.log(
+                    f"[ANALYSIS] Root Cause: {failure_analysis.get('root_cause', 'Unknown')}"
+                )
+
+                suggestions = failure_analysis.get("suggestions", [])
+                if suggestions:
+                    logger.log("[ANALYSIS] Suggestions:")
+                    for i, suggestion in enumerate(suggestions[:3], 1):
+                        logger.log(f"  {i}. {suggestion}")
+
+        except Exception as analysis_error:
+            logger.log(
+                f"[ANALYSIS] Could not generate failure analysis: {analysis_error}"
+            )
+
+    def _print_learning_summary(self, rag_context, logger: IntentLogger):
+        """Print summary of stored learning data."""
+        try:
+            summary = rag_context.get_ui_module_summary()
+
+            logger.log("\n" + "=" * 60)
+            logger.log("              UI LEARNING SUMMARY")
+            logger.log("=" * 60)
+            logger.log(f"Total stored actions: {summary.get('total', 0)}")
+            logger.log(
+                f"Correct: {summary.get('correct_count', 0)} | Incorrect: {summary.get('incorrect_count', 0)}"
+            )
+
+            modules = summary.get("modules", {})
+            if modules:
+                logger.log("\nBy Module:")
+                for mod, data in modules.items():
+                    logger.log(
+                        f"  {mod}: {data['correct']} correct, {data['incorrect']} incorrect"
+                    )
+
+            logger.log("=" * 60)
+
+        except Exception as e:
+            logger.log(f"[SUMMARY] Could not print learning summary: {e}")
 
     def _parse_gherkin_steps(self, intent: str) -> list:
         """
@@ -696,55 +960,6 @@ class BasePage:
             return page_ref
 
         return None
-
-    def _store_learning(self, rag_context, intent: str, result: dict):
-        """
-        Store successful execution in RAG for future learning.
-        """
-        try:
-            if not result.get("success"):
-                return
-
-            # Get the UI learning collection from RAG context
-            collection = getattr(rag_context, "_ui_learning_collection", None)
-            if not collection:
-                print("No UI learning collection available")
-                return
-
-            # Store full intent
-            collection.add(
-                documents=[intent],
-                metadatas=[
-                    {
-                        "type": "ui_full_intent",
-                        "success": "true",
-                        "step_count": str(len(result.get("steps", []))),
-                    }
-                ],
-                ids=[f"intent_{hash(intent)}"],
-            )
-
-            # Store individual successful steps
-            for i, step in enumerate(result.get("steps", [])):
-                if step.get("status") == "passed" and step.get("action"):
-                    step_text = f"{step['step_type']} {step['intent']}"
-                    action_json = json.dumps(step.get("action", {}))
-
-                    collection.add(
-                        documents=[f"{step_text} -> {action_json}"],
-                        metadatas=[
-                            {
-                                "type": "ui_step_action",
-                                "step_type": step["step_type"],
-                                "intent": step["intent"],
-                                "action": action_json,
-                            }
-                        ],
-                        ids=[f"step_{hash(intent)}_{i}"],
-                    )
-
-        except Exception as e:
-            print(f"Failed to store learning: {e}")
 
     # =========================================================================
     # NETWORK INTERCEPTION METHODS

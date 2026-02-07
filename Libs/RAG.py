@@ -1918,6 +1918,832 @@ Tables: {', '.join(tables_used)}"""
             return result
 
 
+# =========================================================================
+# UI MODULE-BASED LEARNING METHODS (Simplified Flow)
+# =========================================================================
+# Flow:
+# 1. Retrieve from ChromaDB by module + intent
+# 2. If found [correct] -> return stored metadata for DUO to use
+# 3. If not found or [incorrect] -> return None (caller uses live HTML)
+# 4. DUO returns full metadata dict, we store it with status
+# =========================================================================
+
+
+def _rag_get_ui_learning_collection(self):
+    """Get or create the UI learning collection."""
+    try:
+        return self.chroma_client.get_or_create_collection(
+            name="ui_module_learning", embedding_function=self.embedding_fn
+        )
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to get UI learning collection: {e}")
+        return None
+
+
+def _rag_extract_module_from_url(self, url: str) -> str:
+    """
+    Extract module name from URL path.
+
+    Examples:
+        /inventory.html -> "inventory"
+        /cart.html -> "cart"
+        /checkout-step-one.html -> "checkout-step-one"
+        / -> "home"
+    """
+    from urllib.parse import urlparse
+
+    if not url:
+        return "unknown"
+
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+
+        if not path:
+            return "home"
+
+        # Remove .html extension and get the last segment
+        if path.endswith(".html"):
+            path = path[:-5]
+
+        # Get last segment if path has slashes
+        segments = path.split("/")
+        module = segments[-1] if segments else "home"
+
+        return module if module else "home"
+
+    except Exception:
+        return "unknown"
+
+
+def _rag_retrieve_ui_action_for_intent(self, module: str, intent: str) -> dict:
+    """
+    Retrieve a matching [correct] action for the intent from ChromaDB.
+    Uses TF-IDF similarity to find the best match.
+
+    Args:
+        module: The module name (e.g., "inventory", "cart")
+        intent: The step intent to match
+
+    Returns:
+        dict with:
+        {
+            "found": True/False,
+            "stored_metadata": {...} or None,  # Full metadata if found [correct]
+            "status": "[correct]" or "[incorrect]" or None,
+            "match_score": 0.0-1.0
+        }
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    result = {
+        "found": False,
+        "stored_metadata": None,
+        "status": None,
+        "match_score": 0.0,
+    }
+
+    try:
+        collection = self.get_ui_learning_collection()
+        if not collection:
+            return result
+
+        # Query for documents with this module
+        query_results = collection.query(
+            query_texts=[f"module:{module} {intent}"],
+            n_results=20,
+            where={"module": module},
+            include=["documents", "metadatas"],
+        )
+
+        if not query_results or not query_results.get("metadatas"):
+            log.safe_print(f"[RAG] No actions found for module: {module}")
+            return result
+
+        metadatas = query_results["metadatas"][0] if query_results["metadatas"] else []
+
+        if not metadatas:
+            return result
+
+        # Use TF-IDF to find best matching intent
+        stored_intents = []
+        stored_data = []
+
+        for metadata in metadatas:
+            if metadata.get("type") == "ui_module_action":
+                stored_intent = metadata.get("intent", "")
+                if stored_intent:
+                    stored_intents.append(stored_intent)
+                    stored_data.append(metadata)
+
+        if not stored_intents:
+            return result
+
+        # Create TF-IDF vectors
+        vectorizer = TfidfVectorizer(
+            ngram_range=(1, 2), lowercase=True, stop_words="english"
+        )
+
+        # Fit on stored intents + query intent
+        all_texts = stored_intents + [intent]
+        tfidf_matrix = vectorizer.fit_transform(all_texts)
+
+        # Get query vector (last one)
+        query_vector = tfidf_matrix[-1]
+
+        # Calculate similarities with stored intents
+        stored_vectors = tfidf_matrix[:-1]
+        similarities = cosine_similarity(query_vector, stored_vectors)[0]
+
+        # Find best match
+        best_idx = similarities.argmax()
+        best_score = similarities[best_idx]
+
+        # Require minimum similarity threshold (0.3)
+        if best_score < 0.3:
+            log.safe_print(
+                f"[RAG] Best match score {best_score:.3f} below threshold 0.3"
+            )
+            return result
+
+        best_metadata = stored_data[best_idx]
+        status = best_metadata.get("status", "[incorrect]")
+
+        log.safe_print(f"[RAG] Found match: score={best_score:.3f}, status={status}")
+
+        # Only return as "found" if status is [correct]
+        if status == "[correct]":
+            result["found"] = True
+            result["stored_metadata"] = best_metadata
+            result["status"] = status
+            result["match_score"] = float(best_score)
+        else:
+            # Found but [incorrect] - still return metadata for reference
+            result["found"] = False
+            result["stored_metadata"] = (
+                best_metadata  # Caller can see what failed before
+            )
+            result["status"] = status
+            result["match_score"] = float(best_score)
+
+        return result
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to retrieve UI action: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return result
+
+
+def _rag_store_ui_action_from_duo(
+    self, module: str, duo_response: dict, status: str, url: str = ""
+) -> bool:
+    """
+    Store DUO's response as a UI action in ChromaDB.
+
+    DUO response format (same as our metadata):
+    {
+        "action_key": "click_login",
+        "intent": "click login button",
+        "action_type": "click",
+        "locator": "#login-btn",
+        "action_json": {...},
+        "playwright_code": "page.click('#login-btn')"
+    }
+
+    We add:
+    - type: "ui_module_action"
+    - module: from parameter
+    - status: "[correct]" or "[incorrect]"
+    - url: current URL
+    - timestamp: now
+
+    Status update logic:
+    - [incorrect] -> [correct] = UPDATE
+    - [correct] -> [incorrect] = DON'T UPDATE (keep working version)
+
+    Returns:
+        True if stored/updated, False otherwise
+    """
+    import json
+    from datetime import datetime
+
+    try:
+        collection = self.get_ui_learning_collection()
+        if not collection:
+            return False
+
+        # Extract fields from DUO response
+        action_key = duo_response.get("action_key", "")
+        intent = duo_response.get("intent", "")
+        action_type = duo_response.get("action_type", "")
+        locator = duo_response.get("locator", "")
+        action_json = duo_response.get("action_json", {})
+        playwright_code = duo_response.get("playwright_code", "")
+
+        if not action_key:
+            # Generate action_key from action_type and intent if not provided
+            import re
+
+            intent_lower = intent.lower()
+            stop_words = {
+                "with",
+                "the",
+                "a",
+                "an",
+                "on",
+                "in",
+                "to",
+                "for",
+                "and",
+                "or",
+                "i",
+                "should",
+                "see",
+                "be",
+            }
+            words = [
+                w
+                for w in re.findall(r"\w+", intent_lower)
+                if w not in stop_words and len(w) > 1
+            ]
+
+            if len(words) >= 2:
+                target_words = [w for w in words if w != action_type.lower()][:2]
+                action_key = f"{action_type}_{'_'.join(target_words)}"
+            elif words:
+                action_key = f"{action_type}_{words[0]}"
+            else:
+                action_key = f"{action_type}_action"
+
+        doc_id = f"ui_{module}_{action_key}"
+
+        # Check if document already exists
+        try:
+            existing = collection.get(ids=[doc_id], include=["metadatas"])
+
+            if (
+                existing
+                and existing.get("metadatas")
+                and len(existing["metadatas"]) > 0
+            ):
+                existing_metadata = existing["metadatas"][0]
+                existing_status = existing_metadata.get("status", "[incorrect]")
+
+                # Status update logic:
+                # - [incorrect] -> [correct] = UPDATE
+                # - [correct] -> [incorrect] = DON'T UPDATE
+                if existing_status == "[correct]" and status == "[incorrect]":
+                    log.safe_print(
+                        f"[RAG] Keeping existing [correct] action: {action_key}"
+                    )
+                    return False
+
+                # Delete existing to update
+                collection.delete(ids=[doc_id])
+                log.safe_print(
+                    f"[RAG] Updating action: {action_key} ({existing_status} -> {status})"
+                )
+
+        except Exception:
+            pass  # Document doesn't exist, proceed with add
+
+        # Prepare document content for embedding
+        document_text = (
+            f"module:{module} intent:{intent} action:{action_type} locator:{locator}"
+        )
+
+        # Prepare metadata (full DUO response + our additions)
+        metadata = {
+            "type": "ui_module_action",
+            "module": module,
+            "action_key": action_key,
+            "intent": intent,
+            "action_type": action_type,
+            "locator": locator,
+            "action_json": (
+                json.dumps(action_json)
+                if isinstance(action_json, dict)
+                else str(action_json)
+            ),
+            "playwright_code": playwright_code,
+            "status": status,
+            "url": url,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # Add to collection
+        collection.add(documents=[document_text], metadatas=[metadata], ids=[doc_id])
+
+        log.safe_print(f"[RAG] Stored action: {module}.{action_key} = {status}")
+        return True
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to store UI action: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def _rag_get_ui_module_summary(self, module: str = None) -> dict:
+    """
+    Get a summary of stored UI learning data.
+
+    Args:
+        module: Optional module filter
+
+    Returns:
+        Summary dict with module counts and action details
+    """
+    try:
+        collection = self.get_ui_learning_collection()
+        if not collection:
+            return {"error": "Collection not found"}
+
+        # Get all documents
+        all_docs = collection.get(include=["metadatas"])
+
+        if not all_docs or not all_docs.get("metadatas"):
+            return {"total": 0, "modules": {}}
+
+        # Build summary
+        summary = {
+            "total": len(all_docs["metadatas"]),
+            "modules": {},
+            "correct_count": 0,
+            "incorrect_count": 0,
+        }
+
+        for metadata in all_docs["metadatas"]:
+            mod = metadata.get("module", "unknown")
+            status = metadata.get("status", "[incorrect]")
+
+            if mod not in summary["modules"]:
+                summary["modules"][mod] = {"actions": [], "correct": 0, "incorrect": 0}
+
+            summary["modules"][mod]["actions"].append(
+                metadata.get("action_key", "unknown")
+            )
+
+            if status == "[correct]":
+                summary["modules"][mod]["correct"] += 1
+                summary["correct_count"] += 1
+            else:
+                summary["modules"][mod]["incorrect"] += 1
+                summary["incorrect_count"] += 1
+
+        return summary
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to get UI module summary: {e}")
+        return {"error": str(e)}
+
+
+# Add methods to Rag class
+Rag.get_ui_learning_collection = _rag_get_ui_learning_collection
+Rag._extract_module_from_url = _rag_extract_module_from_url
+Rag.retrieve_ui_action_for_intent = _rag_retrieve_ui_action_for_intent
+Rag.store_ui_action_from_duo = _rag_store_ui_action_from_duo
+Rag.get_ui_module_summary = _rag_get_ui_module_summary
+
+
+# =============================================================================
+# API ENDPOINT LEARNING METHODS (Two-Document Approach)
+# =============================================================================
+# Collection 1: "api_swagger" - Parsed swagger spec (grouped by resource)
+# Collection 2: "api_endpoint_learning" - Learned API actions with metadata
+# =============================================================================
+
+
+def _rag_get_api_learning_collection(self):
+    """Get or create the API endpoint learning collection."""
+    return self.chroma_client.get_or_create_collection(
+        name="api_endpoint_learning", embedding_function=self.embedding_fn
+    )
+
+
+def _rag_get_api_swagger_collection(self):
+    """Get or create the API swagger collection."""
+    return self.chroma_client.get_or_create_collection(
+        name="api_swagger", embedding_function=self.embedding_fn
+    )
+
+
+def _rag_retrieve_api_action_for_intent(self, resource: str, intent: str) -> dict:
+    """
+    Retrieve a stored API action from ChromaDB by resource and intent.
+
+    Algorithm:
+    1. Query "api_endpoint_learning" collection for this resource
+    2. Use TF-IDF similarity to find best matching intent
+    3. Return stored metadata if status is [correct]
+
+    Args:
+        resource: API resource name (e.g., "Books", "Users")
+        intent: Natural language intent (e.g., "get all books")
+
+    Returns:
+        dict with:
+            - found: bool
+            - status: "[correct]" or "[incorrect]"
+            - stored_metadata: Full action metadata if found
+            - match_score: Similarity score
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    result = {
+        "found": False,
+        "status": None,
+        "stored_metadata": None,
+        "match_score": 0.0,
+    }
+
+    try:
+        collection = self.get_api_learning_collection()
+
+        # Query all actions for this resource
+        all_docs = collection.get(
+            where={"resource": resource}, include=["documents", "metadatas"]
+        )
+
+        if not all_docs or not all_docs.get("documents"):
+            return result
+
+        documents = all_docs["documents"]
+        metadatas = all_docs["metadatas"]
+        ids = all_docs["ids"]
+
+        if not documents:
+            return result
+
+        # Use TF-IDF to find best matching intent
+        all_texts = documents + [intent]
+
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
+        tfidf_matrix = vectorizer.fit_transform(all_texts)
+
+        # Compare intent (last) against all stored documents
+        intent_vector = tfidf_matrix[-1]
+        doc_vectors = tfidf_matrix[:-1]
+
+        similarities = cosine_similarity(intent_vector, doc_vectors).flatten()
+
+        # Find best match above threshold
+        best_idx = similarities.argmax()
+        best_score = similarities[best_idx]
+
+        # Threshold for matching
+        MATCH_THRESHOLD = 0.3
+
+        if best_score >= MATCH_THRESHOLD:
+            result["found"] = True
+            result["match_score"] = float(best_score)
+            result["status"] = metadatas[best_idx].get("status", "[incorrect]")
+
+            # Reconstruct full metadata
+            result["stored_metadata"] = {
+                "action_key": metadatas[best_idx].get("action_key"),
+                "intent": metadatas[best_idx].get("intent"),
+                "resource": metadatas[best_idx].get("resource"),
+                "method": metadatas[best_idx].get("method"),
+                "endpoint": metadatas[best_idx].get("endpoint"),
+                "curl": metadatas[best_idx].get("curl"),
+                "expected_status": metadatas[best_idx].get("expected_status"),
+                "actual_status": metadatas[best_idx].get("actual_status"),
+                "request_body": metadatas[best_idx].get("request_body"),
+                "response_body": metadatas[best_idx].get("response_body"),
+                "status": metadatas[best_idx].get("status"),
+            }
+
+        return result
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to retrieve API action: {e}")
+        return result
+
+
+def _rag_retrieve_swagger_for_intent(self, intent: str, top_k: int = 3) -> list:
+    """
+    Retrieve swagger context for an intent from the api_swagger collection.
+
+    Args:
+        intent: Natural language intent
+        top_k: Number of results to return
+
+    Returns:
+        List of swagger context strings (endpoint info)
+    """
+    try:
+        collection = self.get_api_swagger_collection()
+
+        # Check if collection has documents
+        count = collection.count()
+        if count == 0:
+            log.safe_print(
+                "[WARNING] api_swagger collection is empty. Embed swagger first."
+            )
+            return []
+
+        # Query by intent
+        results = collection.query(
+            query_texts=[intent],
+            n_results=min(top_k, count),
+            include=["documents", "metadatas", "distances"],
+        )
+
+        if results and results.get("documents") and results["documents"][0]:
+            return results["documents"][0]
+
+        return []
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to retrieve swagger context: {e}")
+        return []
+
+
+def _rag_store_api_action_from_duo(
+    self,
+    resource: str,
+    duo_response: dict,
+    execution_result: dict,
+    status: str,
+    base_url: str = None,
+) -> bool:
+    """
+    Store API action metadata from DUO response in ChromaDB.
+
+    Args:
+        resource: API resource name (e.g., "Books", "Users")
+        duo_response: Full response from GitLab Duo with action metadata
+        execution_result: Result from curl execution (status_code, response_body)
+        status: "[correct]" or "[incorrect]"
+        base_url: Base URL used for the API call
+
+    Returns:
+        bool: True if stored successfully
+    """
+    import json
+
+    try:
+        collection = self.get_api_learning_collection()
+
+        action_key = duo_response.get("action_key", "unknown_action")
+        intent = duo_response.get("intent", "")
+
+        # Create unique document ID
+        doc_id = f"api_{resource.lower()}_{action_key}"
+
+        # Create searchable document text
+        document = f"""
+Resource: {resource}
+Intent: {intent}
+Action: {action_key}
+Method: {duo_response.get('method', '')}
+Endpoint: {duo_response.get('endpoint', '')}
+Status: {status}
+"""
+
+        # Prepare metadata (must be string, int, float, or bool)
+        request_body = duo_response.get("request_body", {})
+        response_body = execution_result.get("response_body", "")
+
+        # Serialize complex objects to JSON strings
+        if isinstance(request_body, dict):
+            request_body_str = json.dumps(request_body)[:1000]  # Limit size
+        else:
+            request_body_str = str(request_body)[:1000]
+
+        if isinstance(response_body, dict):
+            response_body_str = json.dumps(response_body)[:1000]
+        else:
+            response_body_str = str(response_body)[:1000]
+
+        metadata = {
+            "action_key": action_key,
+            "intent": intent[:500],  # Limit size
+            "resource": resource,
+            "method": duo_response.get("method", "GET"),
+            "endpoint": duo_response.get("endpoint", ""),
+            "curl": duo_response.get("curl", "")[:2000],  # Limit curl size
+            "expected_status": int(duo_response.get("expected_status", 200)),
+            "actual_status": int(execution_result.get("status_code", -1)),
+            "request_body": request_body_str,
+            "response_body": response_body_str,
+            "base_url": base_url or "",
+            "status": status,
+        }
+
+        # Check if document exists
+        try:
+            existing = collection.get(ids=[doc_id])
+            if existing and existing.get("ids"):
+                # Update existing - only update if current status is [incorrect]
+                # or if we're marking as [incorrect]
+                existing_status = existing["metadatas"][0].get("status", "[incorrect]")
+
+                if existing_status == "[correct]" and status == "[correct]":
+                    # Already correct, no need to update
+                    return True
+
+                # Delete and re-add
+                collection.delete(ids=[doc_id])
+        except Exception:
+            pass  # Document doesn't exist
+
+        # Add new document
+        collection.add(documents=[document], metadatas=[metadata], ids=[doc_id])
+
+        return True
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to store API action: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def _rag_embed_swagger_to_api_swagger_collection(
+    self, swagger_path: str, force_refresh: bool = False
+):
+    """
+    Parse swagger.json and embed into api_swagger collection.
+    This is the "Swagger Doc" that contains parsed API specification.
+
+    Args:
+        swagger_path: Path to swagger.json file
+        force_refresh: If True, delete existing and re-embed
+
+    Returns:
+        Collection reference
+    """
+    import json
+
+    log.safe_print(f"\n{'='*80}")
+    log.safe_print(f"[EMBED] Embedding Swagger to api_swagger collection")
+    log.safe_print(f"{'='*80}")
+
+    collection = self.get_api_swagger_collection()
+
+    # Handle force refresh
+    if force_refresh:
+        try:
+            self.chroma_client.delete_collection("api_swagger")
+            collection = self.get_api_swagger_collection()
+            log.safe_print(f"[REFRESH] Deleted and recreated api_swagger collection")
+        except Exception:
+            pass
+
+    # Load swagger file
+    try:
+        with open(swagger_path, "r", encoding="utf-8") as f:
+            swagger_data = json.load(f)
+    except FileNotFoundError:
+        log.safe_print(f"[ERROR] Swagger file not found: {swagger_path}")
+        return None
+    except json.JSONDecodeError as e:
+        log.safe_print(f"[ERROR] Invalid JSON in swagger file: {e}")
+        return None
+
+    # Extract API info
+    api_info = swagger_data.get("info", {})
+    base_path = swagger_data.get("servers", [{}])[0].get("url", "")
+    paths = swagger_data.get("paths", {})
+    schemas = swagger_data.get("components", {}).get("schemas", {})
+
+    log.safe_print(f"[INFO] API Title: {api_info.get('title', 'Unknown')}")
+    log.safe_print(f"[INFO] Total Paths: {len(paths)}")
+
+    # Group endpoints by resource
+    resource_groups = self._group_endpoints_by_resource(paths, schemas)
+
+    documents = []
+    metadatas = []
+    ids = []
+
+    for resource_name, resource_data in resource_groups.items():
+        # Create a comprehensive document for each endpoint
+        for endpoint in resource_data.get("endpoints", []):
+            method = endpoint.get("method", "GET")
+            path = endpoint.get("path", "")
+
+            # Create searchable document with action keywords
+            action_keywords = self._get_action_keywords(method, path, resource_name)
+
+            doc_content = f"""
+Resource: {resource_name}
+Method: {method}
+Endpoint: {path}
+Actions: {action_keywords}
+Summary: {endpoint.get('summary', '')}
+Description: {endpoint.get('description', '')[:500]}
+Parameters: {', '.join([p.get('name', '') for p in endpoint.get('parameters', [])])}
+"""
+
+            # Add request body schema if present
+            if endpoint.get("request_body"):
+                content = endpoint["request_body"].get("content", {})
+                for content_type, content_data in content.items():
+                    schema_ref = content_data.get("schema", {}).get("$ref", "")
+                    if schema_ref:
+                        schema_name = schema_ref.split("/")[-1]
+                        if schema_name in schemas:
+                            props = list(
+                                schemas[schema_name].get("properties", {}).keys()
+                            )
+                            doc_content += f"\nRequest Schema: {schema_name}"
+                            doc_content += f"\nRequest Properties: {', '.join(props)}"
+
+            documents.append(doc_content)
+            metadatas.append(
+                {
+                    "resource": resource_name,
+                    "method": method,
+                    "path": path,
+                    "summary": endpoint.get("summary", "")[:200],
+                    "has_path_params": "{" in path,
+                    "has_request_body": endpoint.get("request_body") is not None,
+                }
+            )
+            ids.append(f"swagger_{resource_name.lower()}_{method.lower()}_{len(ids)}")
+
+    # Add to collection
+    if documents:
+        try:
+            # Remove existing documents first
+            existing = collection.get(ids=ids)
+            if existing and existing.get("ids"):
+                collection.delete(ids=existing["ids"])
+
+            collection.add(documents=documents, metadatas=metadatas, ids=ids)
+            log.safe_print(
+                f"[OK] Embedded {len(documents)} endpoints to api_swagger collection"
+            )
+        except Exception as e:
+            log.safe_print(f"[ERROR] Failed to embed swagger: {e}")
+
+    return collection
+
+
+def _rag_get_api_learning_summary(self) -> dict:
+    """Get summary of stored API actions by resource."""
+    try:
+        collection = self.get_api_learning_collection()
+
+        all_docs = collection.get(include=["metadatas"])
+
+        summary = {
+            "total": len(all_docs.get("ids", [])),
+            "correct_count": 0,
+            "incorrect_count": 0,
+            "resources": {},
+        }
+
+        for metadata in all_docs.get("metadatas", []):
+            resource = metadata.get("resource", "unknown")
+            status = metadata.get("status", "[incorrect]")
+
+            if resource not in summary["resources"]:
+                summary["resources"][resource] = {
+                    "actions": [],
+                    "correct": 0,
+                    "incorrect": 0,
+                }
+
+            summary["resources"][resource]["actions"].append(
+                metadata.get("action_key", "unknown")
+            )
+
+            if status == "[correct]":
+                summary["resources"][resource]["correct"] += 1
+                summary["correct_count"] += 1
+            else:
+                summary["resources"][resource]["incorrect"] += 1
+                summary["incorrect_count"] += 1
+
+        return summary
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to get API learning summary: {e}")
+        return {"error": str(e)}
+
+
+# Add API methods to Rag class
+Rag.get_api_learning_collection = _rag_get_api_learning_collection
+Rag.get_api_swagger_collection = _rag_get_api_swagger_collection
+Rag.retrieve_api_action_for_intent = _rag_retrieve_api_action_for_intent
+Rag.retrieve_swagger_for_intent = _rag_retrieve_swagger_for_intent
+Rag.store_api_action_from_duo = _rag_store_api_action_from_duo
+Rag.embed_swagger_to_api_swagger_collection = (
+    _rag_embed_swagger_to_api_swagger_collection
+)
+Rag.get_api_learning_summary = _rag_get_api_learning_summary
+
+
 if __name__ == "__main__":
     rag = Rag()
 

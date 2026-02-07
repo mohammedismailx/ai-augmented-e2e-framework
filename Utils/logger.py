@@ -364,6 +364,145 @@ Duration: {duration.total_seconds():.2f} seconds
 
         self.log(f"{'='*80}\n")
 
+    # =========================================================================
+    # VERBOSE LOGGING METHODS FOR UI INTENT EXECUTION
+    # =========================================================================
+
+    def log_rag_retrieval(
+        self,
+        module: str,
+        found: bool,
+        status: str = None,
+        action_key: str = None,
+        match_score: float = None,
+    ):
+        """Log RAG retrieval attempt and result."""
+        self.log(f"\n[RETRIEVE] Checking ChromaDB for module: {module}")
+
+        if found and status == "[correct]":
+            self.log(f"[RETRIEVE] Found [correct] action in ChromaDB")
+            if action_key:
+                self.log(f"[RETRIEVE] Action key: {action_key}")
+            if match_score is not None:
+                self.log(f"[RETRIEVE] Match score: {match_score:.3f}")
+        else:
+            self.log(f"[RETRIEVE] No [correct] action found - using live HTML")
+            if status:
+                self.log(f"[RETRIEVE] Previous status: {status}")
+
+    def log_stored_metadata(self, metadata: dict):
+        """Log full stored metadata from ChromaDB."""
+        self.log(f"\n[RAG DATA] ─────────────────────────────────────────────")
+        self.log(f"[RAG DATA] STORED METADATA FROM CHROMADB:")
+        self.log(f"[RAG DATA]   action_key: {metadata.get('action_key', 'N/A')}")
+        self.log(f"[RAG DATA]   intent: {metadata.get('intent', 'N/A')}")
+        self.log(f"[RAG DATA]   action_type: {metadata.get('action_type', 'N/A')}")
+        self.log(f"[RAG DATA]   locator: {metadata.get('locator', 'N/A')}")
+        self.log(
+            f"[RAG DATA]   playwright_code: {metadata.get('playwright_code', 'N/A')}"
+        )
+        self.log(f"[RAG DATA]   status: {metadata.get('status', 'N/A')}")
+        self.log(f"[RAG DATA] ─────────────────────────────────────────────")
+
+    def log_live_html_elements(
+        self,
+        elements: list,
+        max_elements: int = 5,
+        max_length: int = 200,
+        is_retry: bool = False,
+    ):
+        """Log live HTML elements extracted from page."""
+        tag = "[LIVE HTML RETRY]" if is_retry else "[LIVE HTML]"
+        header = "ELEMENTS FOR RETRY:" if is_retry else "ELEMENTS SENT TO DUO:"
+
+        self.log(f"\n{tag} ─────────────────────────────────────────────")
+        self.log(f"{tag} {header}")
+
+        for i, elem in enumerate(elements[:max_elements], 1):
+            elem_display = elem[:max_length] + "..." if len(elem) > max_length else elem
+            self.log(f"{tag}   {i}. {elem_display}")
+
+        if len(elements) > max_elements:
+            self.log(f"{tag}   ... and {len(elements) - max_elements} more elements")
+
+        self.log(f"{tag} ─────────────────────────────────────────────")
+
+    def log_duo_request(
+        self, source: str, module: str, step_intent: str, step_type: str
+    ):
+        """Log the request being sent to GitLab Duo."""
+        self.log(f"\n[DUO REQUEST] ═══════════════════════════════════════════════════")
+        self.log(f"[DUO REQUEST] Source: {source}")
+        self.log(f"[DUO REQUEST] Module: {module}")
+        self.log(f"[DUO REQUEST] Step Intent: {step_intent}")
+        self.log(f"[DUO REQUEST] Step Type: {step_type}")
+
+    def log_duo_prompt(self, prompt: str, max_lines: int = 50):
+        """Log the full prompt being sent to GitLab Duo."""
+        self.log(f"\n[PROMPT] ─────────────────────────────────────────────")
+        self.log(f"[PROMPT] PROMPT SENT TO GITLAB DUO:")
+
+        prompt_lines = prompt.strip().split("\n")
+        for line in prompt_lines[:max_lines]:
+            self.log(f"[PROMPT] {line.strip()}")
+
+        if len(prompt_lines) > max_lines:
+            self.log(
+                f"[PROMPT] ... (truncated, {len(prompt_lines) - max_lines} more lines)"
+            )
+
+        self.log(f"[PROMPT] ─────────────────────────────────────────────")
+
+    def log_duo_response(self, response: dict, is_retry: bool = False):
+        """Log full response from GitLab Duo."""
+        import json
+
+        tag = "[DUO RESPONSE RETRY]" if is_retry else "[DUO RESPONSE]"
+
+        self.log(f"\n{tag} ═══════════════════════════════════════════════════")
+        self.log(f"{tag} FULL RESPONSE FROM GITLAB DUO:")
+        self.log(f"{tag}   action_key: {response.get('action_key', 'N/A')}")
+        self.log(f"{tag}   intent: {response.get('intent', 'N/A')}")
+        self.log(f"{tag}   action_type: {response.get('action_type', 'N/A')}")
+        self.log(f"{tag}   locator: {response.get('locator', 'N/A')}")
+
+        action_json = response.get("action_json", {})
+        if isinstance(action_json, dict):
+            self.log(f"{tag}   action_json: {json.dumps(action_json)}")
+        else:
+            self.log(f"{tag}   action_json: {action_json}")
+
+        self.log(f"{tag}   playwright_code: {response.get('playwright_code', 'N/A')}")
+        self.log(f"{tag} ═══════════════════════════════════════════════════")
+
+    def log_store_action(
+        self,
+        module: str,
+        action_key: str,
+        status: str,
+        locator: str = None,
+        playwright_code: str = None,
+        context: str = None,
+    ):
+        """Log action being stored in ChromaDB."""
+        self.log(f"\n[STORE] ─────────────────────────────────────────────")
+
+        if context:
+            self.log(f"[STORE] {context}:")
+        else:
+            self.log(f"[STORE] STORING ACTION IN CHROMADB:")
+
+        self.log(f"[STORE]   module: {module}")
+        self.log(f"[STORE]   action_key: {action_key}")
+        self.log(f"[STORE]   status: {status}")
+
+        if locator:
+            self.log(f"[STORE]   locator: {locator}")
+        if playwright_code:
+            self.log(f"[STORE]   playwright_code: {playwright_code}")
+
+        self.log(f"[STORE] ─────────────────────────────────────────────")
+
 
 # Convenience aliases
 log = FrameworkLogger

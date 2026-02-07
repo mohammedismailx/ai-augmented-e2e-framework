@@ -21,6 +21,8 @@ from Resources.prompts import (
     get_ui_step_verification_prompt,
     get_ui_step_retry_prompt,
     get_ui_step_failure_analysis_prompt,
+    get_ui_module_action_prompt,
+    get_api_endpoint_action_prompt,
 )
 from Libs.IntentLocatorLibrary import IntentLocatorLibrary
 from Libs.IntentQueriesLibrary import IntentQueriesLibrary
@@ -127,6 +129,22 @@ class AIAgent:
                 kwargs.get("page_url"),
                 kwargs.get("page_title", ""),
                 kwargs.get("previous_steps"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "UI_MODULE_ACTION":
+            return self.execute_ui_module_action_context(
+                kwargs.get("step_intent"),
+                kwargs.get("step_type"),
+                kwargs.get("module"),
+                kwargs.get("page_url"),
+                kwargs.get("stored_metadata"),
+                kwargs.get("relevant_elements"),
+                kwargs.get("previous_steps"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "API_ENDPOINT_ACTION":
+            return self.execute_api_endpoint_action_context(
+                kwargs.get("prompt"),
                 kwargs.get("return_prompt", False),
             )
         return None
@@ -789,6 +807,79 @@ class AIAgent:
 
         return self._parse_json_response(response)
 
+    # =========================================================================
+    # UI MODULE-BASED LEARNING (DUO returns full metadata dict)
+    # =========================================================================
+
+    def execute_ui_module_action_context(
+        self,
+        step_intent: str,
+        step_type: str,
+        module: str,
+        page_url: str,
+        stored_metadata: dict = None,
+        relevant_elements: list = None,
+        previous_steps: list = None,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate action for a UI step, returning FULL METADATA dict for storage.
+
+        DUO receives either:
+        - stored_metadata: Previous [correct] action from ChromaDB (to validate/reuse)
+        - relevant_elements: Live HTML elements (when no stored action or was [incorrect])
+
+        DUO returns the SAME metadata format that will be stored:
+        {
+            "action_key": "click_login",
+            "intent": "click login button",
+            "action_type": "click",
+            "locator": "#login-btn",
+            "action_json": {...},
+            "playwright_code": "page.click('#login-btn')"
+        }
+
+        Args:
+            step_intent: The step text (e.g., "fill username with standard_user")
+            step_type: Given/When/Then/And
+            module: Current module name (e.g., "inventory", "login")
+            page_url: Current page URL
+            stored_metadata: Previous stored action from ChromaDB (optional)
+            relevant_elements: Fresh HTML elements from IntentLocatorLibrary (optional)
+            previous_steps: List of previously executed steps for context
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            Full metadata dict for storage or prompt string
+        """
+        prompt = get_ui_module_action_prompt(
+            step_intent=step_intent,
+            step_type=step_type,
+            module=module,
+            page_url=page_url,
+            stored_metadata=stored_metadata,
+            relevant_elements=relevant_elements or [],
+            previous_steps=previous_steps,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert Playwright automation engineer. You analyze UI steps "
+            "and return complete action metadata objects that can be stored and reused. "
+            "Your responses must be valid JSON with all required fields."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="ui_module_action.json",
+            constraints="Return ONLY valid JSON with action_key, intent, action_type, locator, action_json, and playwright_code",
+            backstory="You are an expert in browser automation and test learning systems...",
+        )
+
+        return self._parse_json_response(response)
+
     def _parse_json_response(self, response: str) -> dict:
         """
         Parse JSON from AI response, handling markdown code blocks.
@@ -821,3 +912,58 @@ class AIAgent:
             log.warning(f"Failed to parse JSON response: {e}")
             log.debug(f"Raw response: {response[:200]}...")
             return None
+
+    # ==================== API ENDPOINT ACTION CONTEXT ====================
+
+    def execute_api_endpoint_action_context(
+        self,
+        prompt: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate API endpoint action metadata from GitLab Duo.
+
+        This is the API equivalent of execute_ui_module_action_context.
+        DUO receives a prompt (built by get_api_endpoint_action_prompt) containing:
+        - Intent (e.g., "get all users")
+        - Resource (e.g., "users")
+        - Either stored_metadata from learning collection OR swagger_context
+        - Base URL
+
+        DUO returns full action metadata for storage:
+        {
+            "action_key": "get_all_users",
+            "intent": "get all users",
+            "resource": "users",
+            "method": "GET",
+            "endpoint": "/api/users",
+            "curl": "curl -X GET 'http://...'/api/users' -H '...'",
+            "expected_status": 200,
+            "request_body": {},
+            "headers": {"Content-Type": "application/json"}
+        }
+
+        Args:
+            prompt: Pre-built prompt from get_api_endpoint_action_prompt
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            Raw AI response string (parsing done by caller)
+        """
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert API automation engineer. You analyze API intents "
+            "and return complete action metadata objects with curl commands that can be "
+            "stored and reused. Your responses must be valid JSON with all required fields."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="api_endpoint_action.json",
+            constraints="Return ONLY valid JSON with action_key, intent, resource, method, endpoint, curl, expected_status, request_body, and headers",
+            backstory="You are an expert in REST API automation and test learning systems...",
+        )
+
+        return response

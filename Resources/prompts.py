@@ -1235,3 +1235,396 @@ def get_ui_step_failure_analysis_prompt(
 
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
+
+
+# =============================================================================
+# UI MODULE-BASED LEARNING PROMPTS (DUO returns full metadata dict)
+# =============================================================================
+
+
+def get_ui_module_action_prompt(
+    step_intent: str,
+    step_type: str,
+    module: str,
+    page_url: str,
+    stored_metadata: dict = None,
+    relevant_elements: list = None,
+    previous_steps: list = None,
+) -> str:
+    """
+    Generate prompt for GitLab Duo to decide on action and return FULL METADATA dict.
+    
+    DUO receives either:
+    - stored_metadata: Previous [correct] action from ChromaDB (to validate/reuse)
+    - relevant_elements: Live HTML elements (when no stored action or was [incorrect])
+    
+    DUO must return the SAME metadata format that will be stored:
+    {
+        "action_key": "click_login",
+        "intent": "click login button",
+        "action_type": "click",
+        "locator": "#login-btn",
+        "action_json": {...},
+        "playwright_code": "page.click('#login-btn')"
+    }
+    
+    Args:
+        step_intent: The step text (e.g., "fill username with standard_user")
+        step_type: Given/When/Then/And
+        module: Current module name (e.g., "inventory", "login")
+        page_url: Current page URL
+        stored_metadata: Previous stored action from ChromaDB (optional)
+        relevant_elements: Fresh HTML elements from IntentLocatorLibrary (optional)
+        previous_steps: List of previously executed steps for context
+    """
+    
+    # Format stored metadata if provided
+    stored_context = ""
+    if stored_metadata:
+        stored_context = f"""
+        📦 STORED ACTION FROM LEARNING DATABASE (previously worked):
+        ───────────────────────────────────────────────────────────
+        Action Key: {stored_metadata.get('action_key', 'N/A')}
+        Intent: {stored_metadata.get('intent', 'N/A')}
+        Action Type: {stored_metadata.get('action_type', 'N/A')}
+        Locator: {stored_metadata.get('locator', 'N/A')}
+        Playwright Code: {stored_metadata.get('playwright_code', 'N/A')}
+        Status: {stored_metadata.get('status', 'N/A')}
+        ───────────────────────────────────────────────────────────
+        
+        ⚡ This action WORKED BEFORE. You can:
+        - REUSE it exactly if the intent matches
+        - MODIFY if the current intent is slightly different
+        """
+    
+    # Format live elements if provided
+    elements_context = ""
+    if relevant_elements:
+        elements_str = "\n".join(
+            [f"  {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:10])]
+        )
+        elements_context = f"""
+        🎯 LIVE HTML ELEMENTS FROM CURRENT PAGE:
+        ───────────────────────────────────────────────────────────
+        {elements_str}
+        ───────────────────────────────────────────────────────────
+        
+        ⚠️ No stored action found or previous action was [incorrect].
+        Analyze these elements and generate a NEW action.
+        """
+    
+    # Format previous steps context
+    previous_context = ""
+    if previous_steps:
+        prev_str = "\n".join(
+            [
+                f"  - {s.get('step_type', '')} {s.get('intent', '')}: {s.get('status', 'pending')}"
+                for s in previous_steps[-3:]
+            ]
+        )
+        previous_context = f"""
+        ## Previous Steps Executed
+        {prev_str}
+        """
+
+    return f"""
+        Your expertise: Playwright browser automation, CSS/XPath selectors, and UI testing.
+
+        📋 **MISSION**: Analyze the step and return a COMPLETE ACTION METADATA object.
+
+        📥 **INPUT DATA**
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🏷️ MODULE: {module}
+        🌐 CURRENT PAGE URL: {page_url}
+
+        📝 STEP TO EXECUTE:
+        Type: {step_type}
+        Intent: {step_intent}
+        {previous_context}
+        {stored_context}
+        {elements_context}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        ⚡ **ACTION TYPE DETERMINATION** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Based on keywords in the intent, determine action_type:
+        - "navigate/go to/open/visit" → action_type: "navigate"
+        - "click/press/tap/submit" → action_type: "click"
+        - "fill/enter/type/input" → action_type: "fill"
+        - "select/choose/pick/dropdown" → action_type: "select"
+        - "verify/assert/check/see/should" → action_type: "verify"
+        - "wait" → action_type: "wait"
+        - "hover" → action_type: "hover"
+        - "start capturing/intercept/monitor" → action_type: "start_capture"
+        - "validate api/api called/check api" → action_type: "validate_api"
+        - "stop capturing" → action_type: "stop_capture"
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🚨 **OUTPUT REQUIREMENTS** 🚨 (CRITICAL - Return this EXACT format!)
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Return a JSON object with ALL these fields:
+
+        {{
+            "action_key": "<action_type>_<target>",  // e.g., "click_login", "fill_username"
+            "intent": "{step_intent}",
+            "action_type": "<type>",  // click, fill, navigate, verify, etc.
+            "locator": "<css_or_xpath_selector>",  // The element selector
+            "action_json": {{
+                "action": "<action_type>",
+                "locator": "<selector>",
+                "value": "<value_if_applicable>",
+                // Additional fields based on action type
+            }},
+            "playwright_code": "<complete_playwright_python_code>"  // e.g., "page.click('#login-btn')"
+        }}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        📋 **EXAMPLES BY ACTION TYPE**:
+
+        1️⃣ CLICK:
+        {{
+            "action_key": "click_login_button",
+            "intent": "click the login button",
+            "action_type": "click",
+            "locator": "#login-button",
+            "action_json": {{"action": "click", "locator": "#login-button"}},
+            "playwright_code": "page.click('#login-button')"
+        }}
+
+        2️⃣ FILL:
+        {{
+            "action_key": "fill_username_standard",
+            "intent": "fill username with standard_user",
+            "action_type": "fill",
+            "locator": "#user-name",
+            "action_json": {{"action": "fill", "locator": "#user-name", "value": "standard_user"}},
+            "playwright_code": "page.fill('#user-name', 'standard_user')"
+        }}
+
+        3️⃣ NAVIGATE:
+        {{
+            "action_key": "navigate_inventory",
+            "intent": "go to inventory page",
+            "action_type": "navigate",
+            "locator": "",
+            "action_json": {{"action": "navigate", "page_ref": "inventory_page"}},
+            "playwright_code": "page.goto('https://example.com/inventory.html')"
+        }}
+
+        4️⃣ VERIFY:
+        {{
+            "action_key": "verify_header_products",
+            "intent": "I should see header Products",
+            "action_type": "verify",
+            "locator": ".title",
+            "action_json": {{
+                "action": "verify",
+                "checks": [{{"type": "text_visible", "text": "Products"}}]
+            }},
+            "playwright_code": "expect(page.get_by_text('Products')).to_be_visible()"
+        }}
+
+        5️⃣ VALIDATE_API:
+        {{
+            "action_key": "validate_api_login",
+            "intent": "validate that login API returned 200",
+            "action_type": "validate_api",
+            "locator": "",
+            "action_json": {{
+                "action": "validate_api",
+                "url_pattern": "**/api/login*",
+                "method": "POST",
+                "expected_status": 200
+            }},
+            "playwright_code": "# Network validation for **/api/login*"
+        }}
+
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations or comments outside JSON
+        ❌ NO markdown code blocks
+        ❌ NO corrections to user's text - use EXACTLY what they wrote
+        ❌ NO missing fields - ALL fields are REQUIRED
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE COMPLETE ACTION METADATA JSON NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+# ==================== API ENDPOINT ACTION PROMPT ====================
+def get_api_endpoint_action_prompt(
+    resource: str,
+    intent: str,
+    swagger_context: str = "",
+    stored_metadata: dict = None,
+    base_url: str = ""
+) -> str:
+    """
+    Generate prompt for DUO to produce API endpoint action metadata.
+    
+    This prompt follows the same pattern as UI module action prompt:
+    - If stored_metadata provided: DUO validates/updates the stored action
+    - If swagger_context provided: DUO generates new action from swagger
+    
+    Args:
+        resource: The API resource name (e.g., "users", "login", "products")
+        intent: User's intent describing what API action to perform
+        swagger_context: Swagger specification context for this endpoint (optional)
+        stored_metadata: Previously stored action metadata from learning collection (optional)
+        base_url: Base URL for the API
+        
+    Returns:
+        Formatted prompt string for DUO
+    """
+    
+    # Build context section
+    context_section = ""
+    
+    if stored_metadata:
+        context_section = f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📚 **STORED LEARNED ACTION** (from previous successful execution):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        This action was previously executed successfully. Use it as reference:
+        
+        • Action Key: {stored_metadata.get('action_key', 'unknown')}
+        • Intent: {stored_metadata.get('intent', 'unknown')}
+        • Method: {stored_metadata.get('method', 'unknown')}
+        • Endpoint: {stored_metadata.get('endpoint', 'unknown')}
+        • cURL: {stored_metadata.get('curl', 'unknown')}
+        • Expected Status: {stored_metadata.get('expected_status', 'unknown')}
+        • Request Body: {stored_metadata.get('request_body', '{{}}')}
+        • Status: {stored_metadata.get('status', 'unknown')}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if swagger_context:
+        context_section += f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📖 **SWAGGER SPECIFICATION CONTEXT**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        {swagger_context}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    return f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🎯 **API ENDPOINT ACTION GENERATOR** - Generate API Request Metadata
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        **RESOURCE**: `{resource}`
+        **INTENT**: "{intent}"
+        **BASE URL**: {base_url}
+        
+        {context_section}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📋 **YOUR TASK**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        Generate a COMPLETE API action metadata JSON object that can be used to execute this API request.
+        
+        **RULES**:
+        1. Generate a unique `action_key` based on resource + method + purpose
+        2. Use the intent EXACTLY as provided
+        3. Determine the correct HTTP method (GET, POST, PUT, DELETE, PATCH)
+        4. Build the complete endpoint path with any path parameters
+        5. Generate a working cURL command
+        6. Include request body if needed (for POST, PUT, PATCH)
+        7. Set appropriate expected status code
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📤 **REQUIRED OUTPUT FORMAT** (JSON ONLY - NO MARKDOWN, NO EXPLANATION):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        {{
+            "action_key": "unique_action_identifier",
+            "intent": "exact intent as provided",
+            "resource": "{resource}",
+            "method": "GET|POST|PUT|DELETE|PATCH",
+            "endpoint": "/api/path/to/resource",
+            "curl": "curl -X METHOD 'base_url/endpoint' -H 'Content-Type: application/json' -d '{{request_body}}'",
+            "expected_status": 200,
+            "request_body": {{}},
+            "headers": {{
+                "Content-Type": "application/json"
+            }}
+        }}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📌 **EXAMPLES**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1️⃣ GET all users:
+        {{
+            "action_key": "get_all_users",
+            "intent": "get all users from the system",
+            "resource": "users",
+            "method": "GET",
+            "endpoint": "/api/users",
+            "curl": "curl -X GET '{base_url}/api/users' -H 'Content-Type: application/json'",
+            "expected_status": 200,
+            "request_body": {{}},
+            "headers": {{"Content-Type": "application/json"}}
+        }}
+
+        2️⃣ POST create user:
+        {{
+            "action_key": "create_new_user",
+            "intent": "create a new user with name John",
+            "resource": "users",
+            "method": "POST",
+            "endpoint": "/api/users",
+            "curl": "curl -X POST '{base_url}/api/users' -H 'Content-Type: application/json' -d '{{\"name\": \"John\", \"email\": \"john@example.com\"}}'",
+            "expected_status": 201,
+            "request_body": {{"name": "John", "email": "john@example.com"}},
+            "headers": {{"Content-Type": "application/json"}}
+        }}
+
+        3️⃣ GET user by ID:
+        {{
+            "action_key": "get_user_by_id",
+            "intent": "get user with id 5",
+            "resource": "users",
+            "method": "GET",
+            "endpoint": "/api/users/5",
+            "curl": "curl -X GET '{base_url}/api/users/5' -H 'Content-Type: application/json'",
+            "expected_status": 200,
+            "request_body": {{}},
+            "headers": {{"Content-Type": "application/json"}}
+        }}
+
+        4️⃣ DELETE user:
+        {{
+            "action_key": "delete_user_5",
+            "intent": "delete user with id 5",
+            "resource": "users",
+            "method": "DELETE",
+            "endpoint": "/api/users/5",
+            "curl": "curl -X DELETE '{base_url}/api/users/5' -H 'Content-Type: application/json'",
+            "expected_status": 200,
+            "request_body": {{}},
+            "headers": {{"Content-Type": "application/json"}}
+        }}
+
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations or comments outside JSON
+        ❌ NO markdown code blocks
+        ❌ NO corrections to user's text - use EXACTLY what they wrote
+        ❌ NO missing fields - ALL fields are REQUIRED
+        ❌ NO placeholder values - use actual values from context
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE COMPLETE API ACTION METADATA JSON NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """

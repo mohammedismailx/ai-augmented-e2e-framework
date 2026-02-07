@@ -2313,7 +2313,7 @@ Rag.get_ui_module_summary = _rag_get_ui_module_summary
 # =============================================================================
 # API ENDPOINT LEARNING METHODS (Two-Document Approach)
 # =============================================================================
-# Collection 1: "api_swagger" - Parsed swagger spec (grouped by resource)
+# Collection 1: "api_endpoints" - Parsed swagger spec (embedded by api_context fixture)
 # Collection 2: "api_endpoint_learning" - Learned API actions with metadata
 # =============================================================================
 
@@ -2326,97 +2326,86 @@ def _rag_get_api_learning_collection(self):
 
 
 def _rag_get_api_swagger_collection(self):
-    """Get or create the API swagger collection."""
+    """Get or create the API swagger collection (uses api_endpoints from fixture)."""
     return self.chroma_client.get_or_create_collection(
-        name="api_swagger", embedding_function=self.embedding_fn
+        name="api_endpoints", embedding_function=self.embedding_fn
     )
 
 
-def _rag_retrieve_api_action_for_intent(self, resource: str, intent: str) -> dict:
+def _rag_retrieve_api_action_for_endpoint(
+    self, resource: str, method: str, endpoint_pattern: str
+) -> dict:
     """
-    Retrieve a stored API action from ChromaDB by resource and intent.
+    Retrieve a stored API action from ChromaDB by endpoint pattern.
+
+    The doc_id is based on the ENDPOINT PATTERN (method + path pattern).
+    This allows multiple intents that hit the same endpoint to share learning.
 
     Algorithm:
-    1. Query "api_endpoint_learning" collection for this resource
-    2. Use TF-IDF similarity to find best matching intent
-    3. Return stored metadata if status is [correct]
+    1. Build doc_id from method + endpoint_pattern
+    2. Query "api_endpoint_learning" collection by doc_id
+    3. Return stored metadata if found and status is [correct]
 
     Args:
         resource: API resource name (e.g., "Books", "Users")
-        intent: Natural language intent (e.g., "get all books")
+        method: HTTP method (e.g., "GET", "POST")
+        endpoint_pattern: Endpoint pattern from swagger (e.g., "/api/v1/Books/{id}")
 
     Returns:
         dict with:
             - found: bool
             - status: "[correct]" or "[incorrect]"
             - stored_metadata: Full action metadata if found
-            - match_score: Similarity score
+            - endpoint_pattern: The matched endpoint pattern
     """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity
+    import re
 
     result = {
         "found": False,
         "status": None,
         "stored_metadata": None,
-        "match_score": 0.0,
+        "endpoint_pattern": endpoint_pattern,
     }
 
     try:
         collection = self.get_api_learning_collection()
 
-        # Query all actions for this resource
-        all_docs = collection.get(
-            where={"resource": resource}, include=["documents", "metadatas"]
+        # Build the doc_id from method + endpoint_pattern
+        # Normalize: /api/v1/Books/{id} → api_v1_Books_id
+        endpoint_key = (
+            endpoint_pattern.replace("/", "_")
+            .replace("{", "")
+            .replace("}", "")
+            .strip("_")
         )
+        doc_id = f"api_{resource.lower()}_{method}_{endpoint_key}"
 
-        if not all_docs or not all_docs.get("documents"):
-            return result
+        # Query by exact doc_id
+        existing = collection.get(ids=[doc_id], include=["documents", "metadatas"])
 
-        documents = all_docs["documents"]
-        metadatas = all_docs["metadatas"]
-        ids = all_docs["ids"]
+        if existing and existing.get("ids") and len(existing["ids"]) > 0:
+            metadata = existing["metadatas"][0]
 
-        if not documents:
-            return result
-
-        # Use TF-IDF to find best matching intent
-        all_texts = documents + [intent]
-
-        vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
-        tfidf_matrix = vectorizer.fit_transform(all_texts)
-
-        # Compare intent (last) against all stored documents
-        intent_vector = tfidf_matrix[-1]
-        doc_vectors = tfidf_matrix[:-1]
-
-        similarities = cosine_similarity(intent_vector, doc_vectors).flatten()
-
-        # Find best match above threshold
-        best_idx = similarities.argmax()
-        best_score = similarities[best_idx]
-
-        # Threshold for matching
-        MATCH_THRESHOLD = 0.3
-
-        if best_score >= MATCH_THRESHOLD:
             result["found"] = True
-            result["match_score"] = float(best_score)
-            result["status"] = metadatas[best_idx].get("status", "[incorrect]")
+            result["status"] = metadata.get("status", "[incorrect]")
+            result["endpoint_pattern"] = metadata.get(
+                "endpoint_pattern", endpoint_pattern
+            )
 
             # Reconstruct full metadata
             result["stored_metadata"] = {
-                "action_key": metadatas[best_idx].get("action_key"),
-                "intent": metadatas[best_idx].get("intent"),
-                "resource": metadatas[best_idx].get("resource"),
-                "method": metadatas[best_idx].get("method"),
-                "endpoint": metadatas[best_idx].get("endpoint"),
-                "curl": metadatas[best_idx].get("curl"),
-                "expected_status": metadatas[best_idx].get("expected_status"),
-                "actual_status": metadatas[best_idx].get("actual_status"),
-                "request_body": metadatas[best_idx].get("request_body"),
-                "response_body": metadatas[best_idx].get("response_body"),
-                "status": metadatas[best_idx].get("status"),
+                "endpoint_pattern": metadata.get("endpoint_pattern"),
+                "sample_intent": metadata.get("sample_intent"),
+                "resource": metadata.get("resource"),
+                "method": metadata.get("method"),
+                "endpoint": metadata.get("endpoint"),
+                "curl": metadata.get("curl"),
+                "expected_status": metadata.get("expected_status"),
+                "actual_status": metadata.get("actual_status"),
+                "request_body": metadata.get("request_body"),
+                "response_body": metadata.get("response_body"),
+                "base_url": metadata.get("base_url"),
+                "status": metadata.get("status"),
             }
 
         return result
@@ -2424,6 +2413,138 @@ def _rag_retrieve_api_action_for_intent(self, resource: str, intent: str) -> dic
     except Exception as e:
         log.safe_print(f"[ERROR] Failed to retrieve API action: {e}")
         return result
+
+
+# Keep old method for backward compatibility but mark as deprecated
+def _rag_retrieve_api_action_for_intent(self, resource: str, intent: str) -> dict:
+    """
+    DEPRECATED: Use retrieve_api_action_for_endpoint instead.
+
+    This method is kept for backward compatibility but should not be used.
+    The new approach uses endpoint pattern matching instead of intent matching.
+    """
+    result = {
+        "found": False,
+        "status": None,
+        "stored_metadata": None,
+        "match_score": 0.0,
+    }
+
+    # Return empty result - use retrieve_api_action_for_endpoint instead
+    return result
+
+
+def _rag_extract_resource_from_swagger_by_intent(self, intent: str) -> dict:
+    """
+    Search swagger doc by intent and extract resource, method, and endpoint pattern.
+
+    This is the API equivalent of extracting module from URL in UI.
+    Instead of extracting from URL path, we search the swagger collection
+    and extract the endpoint details from the best matching endpoint.
+
+    Args:
+        intent: Natural language intent (e.g., "get all books", "delete user 5")
+
+    Returns:
+        dict: {
+            "resource": Extracted resource (e.g., "Books", "Users"),
+            "method": HTTP method (e.g., "GET", "POST"),
+            "endpoint_pattern": Endpoint path pattern (e.g., "/api/v1/Books/{id}"),
+            "swagger_context": Full swagger context for the matched endpoint
+        }
+    """
+    result = {
+        "resource": "unknown",
+        "method": "GET",
+        "endpoint_pattern": "",
+        "swagger_context": "",
+    }
+
+    try:
+        collection = self.get_api_swagger_collection()
+
+        # Check if collection has documents
+        count = collection.count()
+        if count == 0:
+            log.safe_print(
+                "[WARNING] api_swagger collection is empty. Embed swagger first."
+            )
+            return result
+
+        # Query by intent to find best matching endpoint
+        results = collection.query(
+            query_texts=[intent],
+            n_results=1,  # Get best match
+            include=["documents", "metadatas", "distances"],
+        )
+
+        if results and results.get("metadatas") and results["metadatas"][0]:
+            metadata = results["metadatas"][0][0]
+
+            # Extract all endpoint details from metadata
+            result["resource"] = metadata.get("resource", "unknown")
+            result["method"] = metadata.get("method", "GET")
+            result["endpoint_pattern"] = metadata.get(
+                "path", ""
+            )  # This is the path pattern from swagger
+
+            # Get the swagger context document
+            if results.get("documents") and results["documents"][0]:
+                result["swagger_context"] = results["documents"][0][0]
+
+            # Log the match
+            distance = results.get("distances", [[999]])[0][0]
+            log.safe_print(
+                f"[SWAGGER] Found endpoint: {result['method']} {result['endpoint_pattern']} "
+                f"(resource: {result['resource']}, distance: {distance:.3f})"
+            )
+        else:
+            # Fallback: try to extract resource from intent keywords
+            result["resource"] = self._extract_resource_from_intent_keywords(intent)
+            log.safe_print(
+                f"[SWAGGER] No match found, extracted '{result['resource']}' from intent keywords"
+            )
+
+        return result
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to extract resource from swagger: {e}")
+        return result
+
+
+def _rag_extract_resource_from_intent_keywords(self, intent: str) -> str:
+    """
+    Fallback: Extract resource name from intent using keyword patterns.
+
+    Args:
+        intent: Natural language intent
+
+    Returns:
+        str: Extracted resource name
+    """
+    import re
+
+    intent_lower = intent.lower()
+
+    # Common API resource patterns
+    patterns = [
+        r"(?:get|fetch|retrieve|list|find)\s+(?:all\s+)?(\w+)",  # get all books
+        r"(?:delete|remove)\s+(\w+)",  # delete user
+        r"(?:create|add|insert)\s+(?:a\s+)?(?:new\s+)?(\w+)",  # create new book
+        r"(?:update|modify|edit)\s+(\w+)",  # update book
+        r"(\w+)\s+(?:with|by|for)\s+(?:id|name)",  # user with id, book by name
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, intent_lower)
+        if match:
+            resource = match.group(1)
+            # Skip common non-resource words
+            if resource not in ["all", "the", "a", "an", "this", "that", "me", "my"]:
+                # Capitalize first letter for consistency
+                return resource.capitalize()
+
+    return "unknown"
 
 
 def _rag_retrieve_swagger_for_intent(self, intent: str, top_k: int = 3) -> list:
@@ -2472,9 +2593,14 @@ def _rag_store_api_action_from_duo(
     execution_result: dict,
     status: str,
     base_url: str = None,
+    method: str = None,
+    endpoint_pattern: str = None,
 ) -> bool:
     """
     Store API action metadata from DUO response in ChromaDB.
+
+    The doc_id is based on the ENDPOINT PATTERN, not the intent.
+    This way, multiple intents that hit the same endpoint share the same learning.
 
     Args:
         resource: API resource name (e.g., "Books", "Users")
@@ -2482,28 +2608,48 @@ def _rag_store_api_action_from_duo(
         execution_result: Result from curl execution (status_code, response_body)
         status: "[correct]" or "[incorrect]"
         base_url: Base URL used for the API call
+        method: HTTP method (GET, POST, etc.) - overrides duo_response if provided
+        endpoint_pattern: The endpoint pattern from swagger (e.g., "/api/v1/Books/{id}")
 
     Returns:
         bool: True if stored successfully
     """
     import json
+    import re
 
     try:
         collection = self.get_api_learning_collection()
 
-        action_key = duo_response.get("action_key", "unknown_action")
+        # Use passed method if provided, otherwise get from duo_response
+        http_method = method if method else duo_response.get("method", "GET")
+        endpoint = duo_response.get("endpoint", "")
         intent = duo_response.get("intent", "")
 
-        # Create unique document ID
-        doc_id = f"api_{resource.lower()}_{action_key}"
+        # Create doc_id based on ENDPOINT PATTERN (not intent)
+        # Normalize endpoint: /api/v1/Books/1 → /api/v1/Books/{id}
+        # Use endpoint_pattern if provided, otherwise normalize the endpoint
+        if endpoint_pattern:
+            normalized_endpoint = endpoint_pattern
+        else:
+            # Normalize: replace numeric IDs with {id}
+            normalized_endpoint = re.sub(r"/\d+", "/{id}", endpoint)
+
+        # Create unique document ID from http_method + normalized endpoint
+        # e.g., "api_books_GET_api_v1_Books_id"
+        endpoint_key = (
+            normalized_endpoint.replace("/", "_")
+            .replace("{", "")
+            .replace("}", "")
+            .strip("_")
+        )
+        doc_id = f"api_{resource.lower()}_{http_method}_{endpoint_key}"
 
         # Create searchable document text
         document = f"""
 Resource: {resource}
-Intent: {intent}
-Action: {action_key}
-Method: {duo_response.get('method', '')}
-Endpoint: {duo_response.get('endpoint', '')}
+Method: {http_method}
+Endpoint Pattern: {normalized_endpoint}
+Sample Intent: {intent}
 Status: {status}
 """
 
@@ -2523,11 +2669,11 @@ Status: {status}
             response_body_str = str(response_body)[:1000]
 
         metadata = {
-            "action_key": action_key,
-            "intent": intent[:500],  # Limit size
+            "endpoint_pattern": normalized_endpoint,
+            "sample_intent": intent[:500],  # Store sample intent for reference
             "resource": resource,
-            "method": duo_response.get("method", "GET"),
-            "endpoint": duo_response.get("endpoint", ""),
+            "method": http_method,
+            "endpoint": endpoint,  # Actual endpoint used
             "curl": duo_response.get("curl", "")[:2000],  # Limit curl size
             "expected_status": int(duo_response.get("expected_status", 200)),
             "actual_status": int(execution_result.get("status_code", -1)),
@@ -2592,9 +2738,9 @@ def _rag_embed_swagger_to_api_swagger_collection(
     # Handle force refresh
     if force_refresh:
         try:
-            self.chroma_client.delete_collection("api_swagger")
+            self.chroma_client.delete_collection("api_endpoints")
             collection = self.get_api_swagger_collection()
-            log.safe_print(f"[REFRESH] Deleted and recreated api_swagger collection")
+            log.safe_print(f"[REFRESH] Deleted and recreated api_endpoints collection")
         except Exception:
             pass
 
@@ -2735,13 +2881,549 @@ def _rag_get_api_learning_summary(self) -> dict:
 # Add API methods to Rag class
 Rag.get_api_learning_collection = _rag_get_api_learning_collection
 Rag.get_api_swagger_collection = _rag_get_api_swagger_collection
-Rag.retrieve_api_action_for_intent = _rag_retrieve_api_action_for_intent
+Rag.retrieve_api_action_for_intent = _rag_retrieve_api_action_for_intent  # Deprecated
+Rag.retrieve_api_action_for_endpoint = _rag_retrieve_api_action_for_endpoint  # New
 Rag.retrieve_swagger_for_intent = _rag_retrieve_swagger_for_intent
+Rag.extract_resource_from_swagger_by_intent = (
+    _rag_extract_resource_from_swagger_by_intent
+)
 Rag.store_api_action_from_duo = _rag_store_api_action_from_duo
 Rag.embed_swagger_to_api_swagger_collection = (
     _rag_embed_swagger_to_api_swagger_collection
 )
 Rag.get_api_learning_summary = _rag_get_api_learning_summary
+
+
+# ==================== DB SCHEMA AND LEARNING METHODS ====================
+# Two-layer document architecture for DB:
+# Collection 1: "db_context" - Database schema (embedded by db_context fixture)
+# Collection 2: "db_learning" - Learned SQL queries with metadata
+
+
+def _rag_get_db_schema_collection(self):
+    """Get or create the DB schema collection (uses db_context from fixture)."""
+    return self.chroma_client.get_or_create_collection(
+        name="db_context", embedding_function=self.embedding_fn
+    )
+
+
+def _rag_get_db_learning_collection(self):
+    """Get or create the DB learning collection."""
+    return self.chroma_client.get_or_create_collection(
+        name="db_learning", embedding_function=self.embedding_fn
+    )
+
+
+def _rag_extract_table_from_schema_by_intent(self, intent: str) -> tuple:
+    """
+    Search schema doc by intent and extract table name.
+    Uses a hybrid approach: keyword extraction + ChromaDB embedding search.
+
+    This is the DB equivalent of extracting module from URL in UI.
+
+    Args:
+        intent: Natural language intent (e.g., "get all agents", "find users by email")
+
+    Returns:
+        tuple: (table_name, schema_context)
+            - table_name: Extracted table name (e.g., "agents", "users")
+            - schema_context: Full schema context for the matched table
+    """
+    try:
+        collection = self.get_db_schema_collection()
+
+        # Check if collection has documents
+        count = collection.count()
+        if count == 0:
+            log.safe_print(
+                "[WARNING] db_schema collection is empty. Embed schema first."
+            )
+            return ("unknown", "")
+
+        # STEP 1: Try keyword extraction FIRST (more reliable for verification intents)
+        # This looks for table names mentioned directly in the intent
+        keyword_table = self._extract_table_from_intent_keywords(intent)
+
+        if keyword_table != "unknown":
+            log.safe_print(
+                f"[SCHEMA] Keyword extraction found table: '{keyword_table}'"
+            )
+            # Get schema context for this table from collection
+            try:
+                table_docs = collection.get(
+                    where={"table_name": keyword_table},
+                    include=["documents", "metadatas"],
+                )
+                if (
+                    table_docs
+                    and table_docs.get("documents")
+                    and table_docs["documents"]
+                ):
+                    schema_context = table_docs["documents"][0]
+                    log.safe_print(
+                        f"[SCHEMA] Retrieved schema context for '{keyword_table}'"
+                    )
+                    return (keyword_table, schema_context)
+            except Exception as e:
+                log.safe_print(
+                    f"[SCHEMA] Could not retrieve schema for '{keyword_table}': {e}"
+                )
+
+        # STEP 2: Fall back to ChromaDB embedding search
+        log.safe_print("[SCHEMA] Trying ChromaDB embedding search...")
+        results = collection.query(
+            query_texts=[intent],
+            n_results=3,  # Get top 3 matches for better accuracy
+            include=["documents", "metadatas", "distances"],
+        )
+
+        table_name = "unknown"
+        schema_context = ""
+
+        if results and results.get("metadatas") and results["metadatas"][0]:
+            # Check all results for best match
+            best_distance = 999
+            best_index = 0
+
+            for i, metadata in enumerate(results["metadatas"][0]):
+                if metadata:
+                    distance = results.get("distances", [[999]])[0][i]
+                    candidate_table = metadata.get("table_name", "unknown")
+
+                    log.safe_print(
+                        f"[SCHEMA] Candidate {i+1}: '{candidate_table}' (distance: {distance:.3f})"
+                    )
+
+                    # Prefer results with lower distance
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_index = i
+
+            metadata = results["metadatas"][0][best_index]
+            table_name = metadata.get("table_name", "unknown")
+
+            # Get the schema context document
+            if results.get("documents") and results["documents"][0]:
+                schema_context = results["documents"][0][best_index]
+
+            log.safe_print(
+                f"[SCHEMA] Selected table '{table_name}' (distance: {best_distance:.3f})"
+            )
+        else:
+            log.safe_print(f"[SCHEMA] No ChromaDB match found")
+
+        # STEP 3: If still unknown, use keyword extraction result even if partial
+        if table_name == "unknown" and keyword_table != "unknown":
+            table_name = keyword_table
+            log.safe_print(
+                f"[SCHEMA] Using keyword extraction result: '{keyword_table}'"
+            )
+
+        return (table_name, schema_context)
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to extract table from schema: {e}")
+        return ("unknown", "")
+
+
+def _rag_extract_table_from_intent_keywords(self, intent: str) -> str:
+    """
+    Fallback: Extract table name from intent using keyword patterns.
+    Also tries to match against known table names from the schema collection.
+
+    Args:
+        intent: Natural language intent
+
+    Returns:
+        str: Extracted table name
+    """
+    import re
+
+    intent_lower = intent.lower()
+
+    # STEP 1: Try to get known table names from schema collection
+    known_tables = []
+    try:
+        collection = self.get_db_schema_collection()
+        if collection and collection.count() > 0:
+            all_docs = collection.get(include=["metadatas"])
+            if all_docs and all_docs.get("metadatas"):
+                for metadata in all_docs["metadatas"]:
+                    if metadata and metadata.get("table_name"):
+                        known_tables.append(metadata["table_name"].lower())
+    except Exception:
+        pass  # Silently fail, will use regex patterns
+
+    # STEP 2: Direct table name matching - check if intent contains any known table
+    for table in known_tables:
+        # Match table name as a whole word (singular or plural)
+        # e.g., "agents" or "agent" should match table "agents"
+        singular = table.rstrip("s")  # Simple plural handling
+        pattern = rf"\b({re.escape(table)}|{re.escape(singular)})\b"
+        if re.search(pattern, intent_lower):
+            log.safe_print(f"[SCHEMA] Matched known table '{table}' in intent")
+            return table
+
+    # STEP 3: Regex patterns for common DB query intents
+    patterns = [
+        # Verification/confirmation patterns (MOST COMMON for test assertions)
+        r"(?:verify|check|confirm|ensure|validate)\s+(?:that\s+)?(?:\w+\s+)?(?:is\s+)?(?:one\s+of\s+)?(?:the\s+)?(\w+)",
+        r"(?:verify|check|confirm)\s+.*?\b(\w+)\s+(?:table|contains|has|exist)",
+        # Standard query patterns
+        r"(?:get|fetch|retrieve|list|find|select|show)\s+(?:all\s+)?(\w+)",  # get all agents
+        r"(?:delete|remove)\s+(?:from\s+)?(\w+)",  # delete from users
+        r"(?:insert|add)\s+(?:into\s+)?(\w+)",  # insert into posts
+        r"(?:update)\s+(\w+)",  # update users
+        r"(?:count|sum|avg)\s+(?:\w+\s+)?(?:from\s+)?(\w+)",  # count from users
+        # Contextual patterns
+        r"(\w+)\s+(?:where|by|for|with|at)\s+",  # users where, agents at
+        r"(?:in|from|into)\s+(?:the\s+)?(\w+)\s+(?:table)?",  # in the agents table
+        r"(\w+)\s+(?:table|data|records|entries)",  # agents table, user records
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, intent_lower)
+        if match:
+            table = match.group(1)
+            # Skip common non-table words
+            if table not in [
+                "all",
+                "the",
+                "a",
+                "an",
+                "this",
+                "that",
+                "me",
+                "my",
+                "rows",
+                "records",
+                "data",
+                "entries",
+                "table",
+                "one",
+                "is",
+                "are",
+                "has",
+                "have",
+                "if",
+                "it",
+                "system",
+            ]:
+                # If we have known tables, verify the match
+                if known_tables:
+                    # Check if extracted word matches any known table
+                    for known in known_tables:
+                        singular = known.rstrip("s")
+                        if table == known or table == singular:
+                            return known
+                    # Check if extracted word is similar to any known table
+                    for known in known_tables:
+                        if table in known or known in table:
+                            return known
+                return table.lower()
+
+    return "unknown"
+
+
+def _rag_retrieve_db_action_for_intent(self, table: str, intent: str) -> dict:
+    """
+    Retrieve stored DB action (SQL query) for a given table and intent.
+
+    Uses TF-IDF similarity matching on intents within the specified table.
+
+    Args:
+        table: Table name to search within
+        intent: Natural language intent
+
+    Returns:
+        dict: {found, status, stored_metadata, match_score}
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    result = {
+        "found": False,
+        "status": None,
+        "stored_metadata": None,
+        "match_score": 0.0,
+    }
+
+    try:
+        collection = self.get_db_learning_collection()
+
+        # Get all documents for this table
+        all_docs = collection.get(
+            where={"table": table.lower()},
+            include=["documents", "metadatas"],
+        )
+
+        if not all_docs or not all_docs.get("metadatas"):
+            log.safe_print(f"[DB_LEARNING] No stored actions found for table '{table}'")
+            return result
+
+        # Extract intents from stored documents
+        stored_intents = []
+        stored_metadatas = []
+
+        for i, metadata in enumerate(all_docs["metadatas"]):
+            if metadata and metadata.get("intent"):
+                stored_intents.append(metadata["intent"])
+                stored_metadatas.append(metadata)
+
+        if not stored_intents:
+            return result
+
+        # TF-IDF similarity matching
+        vectorizer = TfidfVectorizer(stop_words="english")
+        all_intents = stored_intents + [intent]
+        tfidf_matrix = vectorizer.fit_transform(all_intents)
+
+        # Compare query intent with stored intents
+        query_vector = tfidf_matrix[-1]
+        stored_vectors = tfidf_matrix[:-1]
+
+        similarities = cosine_similarity(query_vector, stored_vectors)[0]
+        best_idx = similarities.argmax()
+        best_score = similarities[best_idx]
+
+        # Threshold for match
+        if best_score >= 0.3:
+            best_metadata = stored_metadatas[best_idx]
+            result["found"] = True
+            result["status"] = best_metadata.get("status", "[incorrect]")
+            result["stored_metadata"] = best_metadata
+            result["match_score"] = float(best_score)
+
+            log.safe_print(
+                f"[DB_LEARNING] Found match: '{best_metadata.get('action_key')}' "
+                f"(score: {best_score:.3f}, status: {result['status']})"
+            )
+        else:
+            log.safe_print(
+                f"[DB_LEARNING] No match above threshold for table '{table}'"
+            )
+
+        return result
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to retrieve DB action: {e}")
+        return result
+
+
+def _rag_store_db_action_from_duo(
+    self,
+    table: str,
+    duo_response: dict,
+    status: str,
+    query_result: str = None,
+    error: str = None,
+) -> bool:
+    """
+    Store DB action metadata from DUO response in ChromaDB.
+
+    Args:
+        table: Table name
+        duo_response: Full response from GitLab Duo with query metadata
+        status: "[correct]" or "[incorrect]"
+        query_result: Query execution result (for logging)
+        error: Error message if query failed
+
+    Returns:
+        bool: True if stored successfully
+    """
+    import json
+    from datetime import datetime
+
+    try:
+        collection = self.get_db_learning_collection()
+
+        action_key = duo_response.get("action_key", "unknown_query")
+        intent = duo_response.get("intent", "")
+        query = duo_response.get("query", "")
+
+        # Create unique document ID
+        doc_id = f"db_{table.lower()}_{action_key}"
+
+        # Create searchable document text
+        document = f"""
+        Table: {table}
+        Intent: {intent}
+        Action Key: {action_key}
+        Query: {query}
+        Status: {status}
+        """
+
+        # Build metadata
+        metadata = {
+            "table": table.lower(),
+            "action_key": action_key,
+            "intent": intent,
+            "query": query,
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # Add optional fields
+        if query_result:
+            metadata["query_result"] = str(query_result)[:500]  # Truncate
+        if error:
+            metadata["error"] = error
+
+        # Add other DUO response fields
+        for key in ["expected_columns", "expected_row_count"]:
+            if key in duo_response:
+                metadata[key] = str(duo_response[key])
+
+        # Upsert (update or insert)
+        collection.upsert(
+            ids=[doc_id],
+            documents=[document],
+            metadatas=[metadata],
+        )
+
+        log.safe_print(
+            f"[DB_LEARNING] Stored action '{action_key}' with status {status}"
+        )
+        return True
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to store DB action: {e}")
+        return False
+
+
+def _rag_embed_schema_to_db_schema_collection(
+    self,
+    schema_info: list,
+    refresh: bool = False,
+) -> bool:
+    """
+    Embed database schema into db_schema collection.
+
+    Args:
+        schema_info: List of dicts with table schema info
+            [{"table_name": "users", "columns": [...], "description": "..."}]
+        refresh: If True, delete existing collection first
+
+    Returns:
+        bool: True if embedded successfully
+    """
+    try:
+        log.safe_print(f"[EMBED] Embedding DB schema to db_schema collection")
+
+        collection = self.get_db_schema_collection()
+
+        # Handle refresh
+        if refresh:
+            self.chroma_client.delete_collection("db_context")
+            collection = self.get_db_schema_collection()
+            log.safe_print(f"[REFRESH] Deleted and recreated db_context collection")
+
+        documents = []
+        metadatas = []
+        ids = []
+
+        for table_info in schema_info:
+            table_name = table_info.get("table_name", "unknown")
+            columns = table_info.get("columns", [])
+            description = table_info.get("description", "")
+
+            # Build searchable document
+            columns_str = ", ".join(
+                [
+                    f"{c.get('name', 'unknown')} ({c.get('type', 'unknown')})"
+                    for c in columns
+                ]
+            )
+            document = f"""
+            Table: {table_name}
+            Description: {description}
+            Columns: {columns_str}
+            """
+
+            # Build metadata
+            metadata = {
+                "table_name": table_name,
+                "column_count": len(columns),
+                "columns_json": str(columns)[:500],
+            }
+
+            documents.append(document)
+            metadatas.append(metadata)
+            ids.append(f"schema_{table_name}")
+
+        if documents:
+            collection.upsert(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+            )
+            log.safe_print(
+                f"[OK] Embedded {len(documents)} tables to db_schema collection"
+            )
+
+        return True
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to embed DB schema: {e}")
+        return False
+
+
+def _rag_get_db_learning_summary(self) -> dict:
+    """
+    Get summary of all stored DB actions.
+
+    Returns:
+        dict: Summary with counts by table and status
+    """
+    try:
+        collection = self.get_db_learning_collection()
+        all_docs = collection.get(include=["metadatas"])
+
+        summary = {
+            "total": len(all_docs.get("ids", [])),
+            "correct_count": 0,
+            "incorrect_count": 0,
+            "tables": {},
+        }
+
+        for metadata in all_docs.get("metadatas", []):
+            table = metadata.get("table", "unknown")
+            status = metadata.get("status", "[incorrect]")
+
+            if table not in summary["tables"]:
+                summary["tables"][table] = {
+                    "queries": [],
+                    "correct": 0,
+                    "incorrect": 0,
+                }
+
+            summary["tables"][table]["queries"].append(
+                metadata.get("action_key", "unknown")
+            )
+
+            if status == "[correct]":
+                summary["tables"][table]["correct"] += 1
+                summary["correct_count"] += 1
+            else:
+                summary["tables"][table]["incorrect"] += 1
+                summary["incorrect_count"] += 1
+
+        return summary
+
+    except Exception as e:
+        log.safe_print(f"[ERROR] Failed to get DB learning summary: {e}")
+        return {"error": str(e)}
+
+
+# Add DB methods to Rag class
+Rag.get_db_schema_collection = _rag_get_db_schema_collection
+Rag.get_db_learning_collection = _rag_get_db_learning_collection
+Rag.extract_table_from_schema_by_intent = _rag_extract_table_from_schema_by_intent
+Rag._extract_table_from_intent_keywords = _rag_extract_table_from_intent_keywords
+Rag.retrieve_db_action_for_intent = _rag_retrieve_db_action_for_intent
+Rag.store_db_action_from_duo = _rag_store_db_action_from_duo
+Rag.embed_schema_to_db_schema_collection = _rag_embed_schema_to_db_schema_collection
+Rag.get_db_learning_summary = _rag_get_db_learning_summary
 
 
 if __name__ == "__main__":

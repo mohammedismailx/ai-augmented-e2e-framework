@@ -78,26 +78,31 @@ class DBConnector:
             log.safe_print("[OK] MySQL connection closed")
 
     # ========================================================================
-    # INTENT-BASED QUERY EXECUTION (RAG + GitLab Duo)
+    # INTENT-BASED QUERY EXECUTION (RAG + GitLab Duo) - TF-IDF FLOW
     # ========================================================================
 
-    def execute_by_intent(self, intent, max_retries=2, log_intent=True):
+    def execute_by_intent(
+        self, intent, max_retries=2, log_intent=True, assert_success=True
+    ):
         """
-        Execute database query based on natural language intent.
+        Execute database query based on natural language intent using TF-IDF flow.
 
-        This is the main orchestrator method that:
-        1. Retrieves relevant schema context from RAG
-        2. Retrieves learning examples (correct/incorrect queries)
-        3. Generates SQL query using GitLab Duo
-        4. Executes the query
-        5. Analyzes the result with AI
-        6. Stores the query as correct/incorrect for future learning
+        This follows the same unified pattern as UI and API:
+        1. TF-IDF: Search schema doc by intent → extract table name
+        2. RAG: Retrieve stored action from db_learning collection (by table)
+        3. DUO: Send BOTH schema_context AND stored_metadata to generate query
+        4. EXECUTE: Run the generated SQL query
+        5. ANALYZE: AI analyzes the result
+        6. STORE: Store action with [correct]/[incorrect] status
+        7. ASSERT: Optionally raise AssertionError if AI analysis fails
 
         Args:
             intent (str): Natural language description of what to query
-                         e.g., "get all posts by user with id 5"
+                         e.g., "verify that the agents table contains an agent name column"
             max_retries (int): Maximum retry attempts on failure
             log_intent (bool): Whether to log intent details
+            assert_success (bool): If True, raises AssertionError when AI analysis fails.
+                                  Default is True for test convenience.
 
         Returns:
             dict: {
@@ -107,9 +112,13 @@ class DBConnector:
                 "query": str,
                 "error": str or None
             }
+
+        Raises:
+            AssertionError: If assert_success=True and the AI analysis indicates failure
         """
-        # Initialize logger with DB test type (reads test ID from builtins automatically)
+        # Initialize logger with DB test type
         from Utils.logger import IntentLogger
+        from Resources.prompts import get_db_query_action_prompt
 
         logger = IntentLogger(test_type="DB")
         logger.start_session(intent=intent)
@@ -119,7 +128,7 @@ class DBConnector:
 
         if log_intent:
             logger.log(f"\n{separator}")
-            logger.log(f"  DB INTENT-BASED QUERY EXECUTION")
+            logger.log(f"  DB INTENT-BASED QUERY EXECUTION (TF-IDF FLOW)")
             logger.log(f"{separator}")
             logger.log(f"  Intent: {intent}")
             logger.log(f"{separator}\n")
@@ -137,46 +146,78 @@ class DBConnector:
                 "error": error_msg,
             }
 
-        # ----------------------------------------------------------------
-        # STEP 1: Retrieve Context from RAG
-        # ----------------------------------------------------------------
-        logger.log(f"{sub_separator}")
-        logger.log(f"  STEP 1: Retrieving Context from RAG")
-        logger.log(f"{sub_separator}")
+        # ============================================================================
+        # STEP 1: TF-IDF - Extract Table from Schema by Intent
+        # ============================================================================
+        logger.log_section("[STEP 1] EXTRACT TABLE FROM SCHEMA BY INTENT")
 
-        rag_result = self.rag_instance.retrieve_db_context_by_intent(intent)
-
-        schema_context = rag_result.get("schema_context", "")
-        correct_examples = rag_result.get("correct_examples", "")
-        incorrect_examples = rag_result.get("incorrect_examples", "")
-
-        if not schema_context:
-            logger.log(
-                f"  [WARNING] No schema context found. Query generation may be less accurate."
-            )
-
-        logger.log(f"  Schema Context:      {len(schema_context)} characters")
-        logger.log(f"  Correct Examples:    {len(correct_examples)} characters")
-        logger.log(f"  Incorrect Examples:  {len(incorrect_examples)} characters")
-        logger.log("")
-
-        # ----------------------------------------------------------------
-        # STEP 2: Generate SQL Query with GitLab Duo
-        # ----------------------------------------------------------------
-        logger.log(f"{sub_separator}")
-        logger.log(f"  STEP 2: Generating SQL Query with GitLab Duo")
-        logger.log(f"{sub_separator}")
-
-        sql_query = self.ai_agent.generate_db_query(
-            intent=intent,
-            schema_context=schema_context,
-            correct_examples=correct_examples,
-            incorrect_examples=incorrect_examples,
+        table, schema_context = self.rag_instance.extract_table_from_schema_by_intent(
+            intent
         )
 
-        if not sql_query:
-            error_msg = "Failed to generate SQL query from AI agent"
-            logger.log(f"  [ERROR] {error_msg}")
+        logger.log(f"[TABLE] Extracted: {table}")
+        if schema_context:
+            logger.log(f"[SCHEMA] Found context ({len(schema_context)} chars)")
+            logger.log_titled_block("SCHEMA CONTEXT", schema_context, max_chars=2000)
+        else:
+            logger.log(f"[SCHEMA] No schema context found")
+
+        # ============================================================================
+        # STEP 2: RAG - Retrieve Stored Action from Learning Collection
+        # ============================================================================
+        logger.log_section(
+            f"[STEP 2] CHROMADB - RETRIEVING FROM DB LEARNING COLLECTION"
+        )
+
+        learning_result = self.rag_instance.retrieve_db_action_for_intent(table, intent)
+        stored_metadata = learning_result.get("stored_metadata")
+        match_score = learning_result.get("match_score", 0.0)
+
+        if stored_metadata and learning_result.get("status") == "[correct]":
+            logger.log(
+                f"\n[OK] Found [correct] stored action (match_score: {match_score:.3f})"
+            )
+            logger.log_titled_block(
+                "STORED METADATA", json.dumps(stored_metadata, indent=2), max_chars=3000
+            )
+        else:
+            if stored_metadata:
+                logger.log(
+                    f"\n[INFO] Found stored action but status is {learning_result.get('status')}"
+                )
+            else:
+                logger.log(f"\n[INFO] No stored action found for this intent")
+            logger.log(f"  Will generate query from schema context")
+
+        # ============================================================================
+        # STEP 3: Build Prompt with BOTH schema_context AND stored_metadata
+        # ============================================================================
+        logger.log_section("[STEP 3] BUILDING DUO PROMPT WITH BOTH CONTEXTS")
+
+        prompt = get_db_query_action_prompt(
+            table=table,
+            intent=intent,
+            schema_context=schema_context,
+            stored_metadata=stored_metadata,
+        )
+
+        logger.log_duo_prompt(prompt)
+
+        # ============================================================================
+        # STEP 4: GitLab DUO - Generate Query Action Metadata
+        # ============================================================================
+        logger.log_section("[STEP 4] GITLAB DUO - GENERATE QUERY ACTION")
+
+        duo_response_raw = self.ai_agent.run_agent_based_on_context(
+            context="DB_QUERY_ACTION",
+            prompt=prompt,
+        )
+
+        logger.log_duo_response(duo_response_raw)
+
+        if not duo_response_raw:
+            error_msg = "Failed to get response from GitLab Duo"
+            logger.log(f"[ERROR] {error_msg}")
             logger.end_session()
             return {
                 "success": False,
@@ -186,65 +227,114 @@ class DBConnector:
                 "error": error_msg,
             }
 
-        # Clean up the query (remove markdown code blocks if present)
-        sql_query = self._clean_sql_query(sql_query)
-        logger.log(f"  Generated Query:")
-        logger.log(f"  >>> {sql_query}")
-        logger.log("")
+        # ============================================================================
+        # STEP 5: Parse DUO Response
+        # ============================================================================
+        logger.log_section("[STEP 5] PARSING DUO RESPONSE")
 
-        # ----------------------------------------------------------------
-        # STEP 3: Execute the Query
-        # ----------------------------------------------------------------
-        logger.log(f"{sub_separator}")
-        logger.log(f"  STEP 3: Executing Query")
-        logger.log(f"{sub_separator}")
+        try:
+            duo_response = self._parse_duo_json_response(duo_response_raw)
+            sql_query = duo_response.get("query", "")
+            action_key = duo_response.get("action_key", "unknown")
+            operation = duo_response.get("operation", "SELECT")
+
+            if not sql_query:
+                raise ValueError("No query in DUO response")
+
+            sql_query = self._clean_sql_query(sql_query)
+
+            logger.log(f"[ACTION KEY] {action_key}")
+            logger.log(f"[OPERATION] {operation}")
+            logger.log(f"[QUERY] {sql_query}")
+
+            logger.log(f"\n[OK] Parsed action metadata:")
+            logger.log_titled_block(
+                "QUERY METADATA", json.dumps(duo_response, indent=2), max_chars=2000
+            )
+
+        except Exception as e:
+            error_msg = f"Failed to parse DUO response: {e}"
+            logger.log(f"[ERROR] {error_msg}")
+            logger.end_session()
+            return {
+                "success": False,
+                "reason": error_msg,
+                "data": None,
+                "query": None,
+                "error": error_msg,
+            }
+
+        # ============================================================================
+        # STEP 6: Execute the Query
+        # ============================================================================
+        logger.log_section("[STEP 6] EXECUTING SQL QUERY")
 
         attempt = 0
         result = None
         error_message = None
 
         while attempt <= max_retries:
+            logger.log(f"\n[Attempt {attempt + 1}/{max_retries + 1}]")
+            logger.log(f"[Executing query]: {sql_query[:100]}...")
+
             try:
                 result = self.execute_query(sql_query)
                 if result is not None:
-                    logger.log(f"  [OK] Query executed successfully")
-                    logger.log(f"  Rows Returned: {len(result)}")
+                    logger.log(f"\n[OK] Query executed successfully!")
+                    logger.log(f"[Rows Returned] {len(result)}")
                     if result and len(result) > 0:
-                        logger.log(f"  Sample Row: {result[0]}")
+                        logger.log(f"[Sample Row] {result[0]}")
                     break
                 else:
                     error_message = "Query returned None (possible execution error)"
-                    logger.log(f"  [ERROR] {error_message}")
+                    logger.log(f"[ERROR] {error_message}")
             except Exception as e:
                 error_message = str(e)
-                logger.log(f"  [ERROR] Execution failed: {error_message}")
+                logger.log(f"[ERROR] Execution failed: {error_message}")
 
-            # Retry logic
+            # Retry logic with AI analysis
             attempt += 1
             if attempt <= max_retries:
+                # STEP 1: Get AI analysis of why the query failed
                 logger.log(
-                    f"\n  [RETRY] Attempt {attempt}/{max_retries} - Regenerating query..."
+                    f"\n[RETRY] Attempt {attempt}/{max_retries} - Getting AI analysis..."
                 )
-                sql_query = self.ai_agent.retry_db_query(
+                ai_analysis = self.ai_agent.analyze_db_result(
                     intent=intent,
-                    original_query=sql_query,
-                    error_message=error_message,
-                    schema_context=schema_context,
+                    sql_query=sql_query,
+                    result=f"ERROR: {error_message}",
                 )
-                if sql_query:
-                    sql_query = self._clean_sql_query(sql_query)
-                    logger.log(f"  New Query: {sql_query}")
-                else:
-                    logger.log("  [ERROR] Failed to regenerate query")
-                    break
-        logger.log("")
+                ai_analysis_str = str(ai_analysis) if ai_analysis else ""
+                logger.log(f"[RETRY] AI Analysis: {ai_analysis_str[:200]}...")
 
-        # ----------------------------------------------------------------
-        # STEP 4: Analyze Result with AI
-        # ----------------------------------------------------------------
-        logger.log(f"{sub_separator}")
-        logger.log(f"  STEP 4: Analyzing Result with GitLab Duo")
-        logger.log(f"{sub_separator}")
+                # STEP 2: Use ENHANCED retry with AI analysis and all original context
+                logger.log(f"[RETRY] Regenerating query with AI analysis context...")
+
+                fixed_query = self.ai_agent.run_agent_based_on_context(
+                    context="DB_QUERY_RETRY",
+                    table=table,
+                    intent=intent,
+                    failed_query=sql_query,
+                    error_output=error_message,
+                    ai_analysis=ai_analysis_str,
+                    stored_metadata=stored_metadata,  # Original stored metadata
+                    schema_context=schema_context,
+                    return_prompt=False,
+                )
+
+                if fixed_query:
+                    sql_query = self._clean_sql_query(fixed_query)
+                    logger.log(f"[OK] New Query: {sql_query}")
+                else:
+                    logger.log("[ERROR] Failed to regenerate query")
+                    break
+
+        logger.log_step_separator()
+
+        # ============================================================================
+        # STEP 7: Analyze Result with AI
+        # ============================================================================
+        logger.log_section("[STEP 7] GITLAB DUO - ANALYZING RESULT")
 
         if result is not None:
             result_str = json.dumps(result, default=str, indent=2)
@@ -260,60 +350,110 @@ class DBConnector:
         ai_success = analysis.get("success", False)
         ai_reason = analysis.get("reason", "N/A")
 
-        logger.log(f"  AI Analysis Result: {'PASS' if ai_success else 'FAIL'}")
-        logger.log(f"  AI Reason: {ai_reason}")
-        logger.log("")
+        logger.log(f"[AI Analysis] Result: {'PASS' if ai_success else 'FAIL'}")
+        logger.log(f"[AI Analysis] Reason: {ai_reason}")
 
-        # ----------------------------------------------------------------
-        # STEP 5: Store in Learning Collection
-        # ----------------------------------------------------------------
-        logger.log(f"{sub_separator}")
-        logger.log(f"  STEP 5: Storing Query in Learning Collection")
-        logger.log(f"{sub_separator}")
+        logger.log_step_separator()
+
+        # ============================================================================
+        # STEP 8: Store in Learning Collection with Status
+        # ============================================================================
+        logger.log_section("[STEP 8] STORING RESULT IN DB LEARNING COLLECTION")
 
         is_correct = analysis.get("success", False)
-        error_msg = None if is_correct else analysis.get("reason", "Query failed")
+        status = "[correct]" if is_correct else "[incorrect]"
 
-        # Extract table names from query (simple extraction)
-        tables_used = self._extract_tables_from_query(sql_query)
+        # Build DUO response dict for storage
+        duo_for_storage = {
+            "action_key": duo_response.get(
+                "action_key", f"query_{table}_{intent[:20]}"
+            ),
+            "intent": intent,
+            "query": sql_query,
+            "expected_columns": duo_response.get("expected_columns", []),
+            "expected_row_count": duo_response.get("expected_row_count", "unknown"),
+        }
 
-        self.rag_instance.store_query_learning(
-            intent=intent,
-            query=sql_query,
-            tables_used=tables_used,
-            is_correct=is_correct,
-            error_message=error_msg,
+        self.rag_instance.store_db_action_from_duo(
+            table=table,
+            duo_response=duo_for_storage,
+            status=status,
+            query_result=str(result)[:500] if result else None,
+            error=error_message if not is_correct else None,
         )
-        logger.log(f"  Status: [{'CORRECT' if is_correct else 'INCORRECT'}]")
-        logger.log(f"  Tables Used: {tables_used}")
-        logger.log(f"  Stored for future learning")
-        logger.log("")
 
-        # ----------------------------------------------------------------
-        # FINAL RESULT
-        # ----------------------------------------------------------------
+        logger.log(f"[Actual Status] {status}")
+        logger.log(f"[Table] {table}")
+        logger.log(f"[Action Key] {duo_for_storage['action_key']}")
+        logger.log(f"[OK] Stored action with status {status}")
+
+        logger.log_step_separator()
+
+        # ============================================================================
+        # EXECUTION SUMMARY
+        # ============================================================================
         success = analysis.get("success", False) and result is not None
         reason = analysis.get("reason", "No reason provided")
 
-        logger.log(f"{separator}")
-        logger.log(f"  FINAL RESULT: {'SUCCESS' if success else 'FAILED'}")
-        logger.log(f"{separator}")
-        logger.log(f"  Success: {success}")
-        logger.log(f"  Reason:  {reason}")
-        logger.log(f"  Query:   {sql_query}")
-        logger.log(f"  Rows:    {len(result) if result else 0}")
-        logger.log(f"{separator}\n")
+        logger.log_section("EXECUTION SUMMARY")
+        logger.log(f"  Intent: {intent}")
+        logger.log(f"  Table: {table}")
+        logger.log(f"  Query: {sql_query[:80]}...")
+        logger.log(f"  Rows Returned: {len(result) if result else 0}")
+        logger.log(f"  Learning Status Stored: {status}")
+        logger.log(f"  AI Analysis Result: {'PASS' if success else 'FAIL'}")
+        logger.log(f"  AI Analysis Reason: {reason[:50]}...")
+        logger.log(f"  Error: {error_message if not success else 'None'}")
 
         # End the logging session
         logger.end_session()
 
-        return {
+        # Build result dict
+        result_dict = {
             "success": success,
-            "reason": reason,  # Top-level reason like API
+            "reason": reason,
             "data": result,
             "query": sql_query,
             "error": error_message if not success else None,
         }
+
+        # ============================================================================
+        # STEP 9: ASSERT SUCCESS (if enabled)
+        # ============================================================================
+        if assert_success and not success:
+            raise AssertionError(f"AI Analysis Failed: {reason}")
+
+        return result_dict
+
+    def _parse_duo_json_response(self, response_raw):
+        """
+        Parse JSON from DUO response, handling markdown code blocks.
+        """
+        import re
+
+        if not response_raw:
+            return {}
+
+        # Clean up the response
+        response_text = response_raw.strip()
+
+        # Remove markdown code blocks
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        elif response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+
+        # Try to find JSON object
+        response_text = response_text.strip()
+
+        # Look for JSON object pattern
+        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group(0)
+
+        return json.loads(response_text)
 
     def _clean_sql_query(self, query):
         """

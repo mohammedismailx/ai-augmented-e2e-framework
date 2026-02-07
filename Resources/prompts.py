@@ -519,7 +519,7 @@ def get_api_response_analysis_prompt(
         response_body[:2000] if len(response_body) > 2000 else response_body
     )
 
-    return f"""Analyze this API response and return ONLY a JSON object.
+    return f"""Analyze this API response and determine if the INTENT was completely fulfilled.
 
 Intent: {intent}
 Command: {curl_command}
@@ -527,17 +527,28 @@ Status: {status_code}
 Response: {truncated_body}
 Error: {stderr if stderr else "None"}
 
-Rules:
-- Status 2xx with valid data = success
-- Status 4xx/5xx or error = failure
-- Check if intent was fulfilled
+**CRITICAL RULES FOR VERIFICATION/VALIDATION INTENTS:**
+- If intent contains "verify", "check", "confirm", "ensure", "validate", "make sure":
+  - You MUST check if the response data matches the expected values in the intent
+  - Example: "verify title is Activity 10" → Check if response has "title": "Activity 10"
+  - If data exists but doesn't match expected value = FAILURE
+  - If data matches expected value = SUCCESS
 
-Return ONLY this JSON format (no other text):
-{{"success": true, "reason": "explanation"}}
-or
-{{"success": false, "reason": "explanation"}}
+**GENERAL RULES:**
+- Status 2xx with data that fulfills ALL parts of the intent = SUCCESS
+- Status 4xx/5xx or curl error = FAILURE
+- Status 2xx but data doesn't match intent expectations = FAILURE
 
-JSON result:"""
+**OUTPUT FORMAT:**
+Return ONLY a JSON object with your specific analysis.
+
+Example SUCCESS:
+{{"success": true, "reason": "Activity 5 retrieved with title 'Activity 5' matching expected value"}}
+
+Example FAILURE:
+{{"success": false, "reason": "Response has title 'Activity 5' but intent expected 'Activity 10'"}}
+
+Your JSON analysis:"""
 
 
 def get_curl_retry_prompt(
@@ -616,6 +627,151 @@ def get_curl_retry_prompt(
         
         ═══════════════════════════════════════════════════════════════════════════════════════
         🏁 **GENERATE FIXED CURL COMMAND NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_api_endpoint_retry_prompt(
+    resource: str,
+    intent: str,
+    failed_curl: str,
+    error_output: str,
+    ai_analysis: str,
+    stored_metadata: dict,
+    swagger_context: str,
+    base_url: str,
+) -> str:
+    """
+    Generate ENHANCED retry prompt with AI analysis and all original context.
+    
+    This prompt includes:
+    - AI analysis from first attempt (why it failed)
+    - Original stored_metadata from learning database
+    - Original swagger_context
+    - Error details
+
+    Args:
+        resource: The API resource name
+        intent: Original user intent
+        failed_curl: The curl command that failed
+        error_output: Error message from execution
+        ai_analysis: AI's analysis of why the first attempt failed
+        stored_metadata: Original stored action from learning database
+        swagger_context: API documentation for reference
+        base_url: Base URL for the API
+    """
+    
+    # Build stored metadata section
+    stored_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📚 **ORIGINAL STORED ACTION FROM LEARNING DATABASE**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if stored_metadata:
+        stored_section += f"""
+        This action was used in the FIRST attempt and FAILED:
+        
+        - Action Key: {stored_metadata.get('action_key', 'unknown')}
+        - Intent: {stored_metadata.get('intent', 'unknown')}
+        - Method: {stored_metadata.get('method', 'unknown')}
+        - Endpoint: {stored_metadata.get('endpoint', 'unknown')}
+        - cURL: {stored_metadata.get('curl', 'unknown')}
+        - Status: {stored_metadata.get('status', 'unknown')}
+        """
+    else:
+        stored_section += """
+        No stored action was used (first attempt was generated from swagger).
+        """
+    
+    stored_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    # Build swagger context section
+    swagger_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📖 **SWAGGER API DOCUMENTATION**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if swagger_context:
+        swagger_section += f"""
+        {swagger_context}
+        """
+    else:
+        swagger_section += """
+        No swagger documentation available.
+        """
+    
+    swagger_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    # Build AI analysis section
+    analysis_section = f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🤖 **AI ANALYSIS OF FAILED ATTEMPT** (IMPORTANT - Learn from this!):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        The AI analyzed why the first attempt failed:
+        
+        {ai_analysis if ai_analysis else 'No AI analysis available'}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+    return f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🔄 **API ENDPOINT RETRY** - Fix Failed Request Using AI Analysis
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        **RESOURCE**: `{resource}`
+        **INTENT**: "{intent}"
+        **BASE URL**: {base_url}
+        
+        {stored_section}
+        
+        {swagger_section}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        ❌ **FAILED ATTEMPT DETAILS**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        The following curl command was attempted and FAILED:
+        
+        💥 FAILED CURL:
+        {failed_curl}
+
+        🔴 ERROR OUTPUT:
+        {error_output}
+        
+        {analysis_section}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📋 **YOUR TASK**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1. **STUDY** the AI analysis to understand WHY the first attempt failed
+        2. **AVOID** repeating the same mistake
+        3. **REFER** to the swagger documentation for correct endpoint/method
+        4. **GENERATE** a corrected curl command
+
+        ⚡ **COMMON FIXES**:
+        - 404 Not Found → Check endpoint path spelling
+        - 400 Bad Request → Check request body JSON format
+        - 401/403 → Add/fix authorization headers
+        - Connection refused → Check URL format
+        - SSL errors → Add -k flag
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📤 **REQUIRED OUTPUT**: Return ONLY the corrected curl command (single line)
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        🚫 NO explanations, NO markdown, NO alternatives
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE CORRECTED CURL COMMAND NOW** 🏁
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
 
@@ -768,24 +924,34 @@ def get_db_query_analysis_prompt(
     # Truncate result if too long
     result_preview = result[:1000] if result else "No results"
 
-    return f"""Analyze this SQL query execution and return ONLY a JSON object.
+    return f"""Analyze this SQL query execution and determine if the INTENT was fulfilled.
 
 Intent: {intent}
 Query: {query}
 Result: {result_preview}
 
-Rules:
-- Query executed without error AND returned relevant data = success
-- Query returned empty array [] but no error = success (data may not exist)
-- Query had syntax error or execution error = failure
-- Query returned data but doesn't match intent = failure
+**CRITICAL RULES FOR VERIFICATION/CONFIRMATION INTENTS:**
+- If intent contains "verify", "check", "confirm", "ensure", "validate" that something EXISTS or IS TRUE:
+  - Empty result [] = FAILURE (the thing being verified does NOT exist or is NOT true)
+  - Non-empty result with matching data = SUCCESS (verification passed)
 
-Return ONLY this JSON format (no other text):
-{{"success": true, "reason": "explanation"}}
-or
-{{"success": false, "reason": "explanation"}}
+**GENERAL RULES:**
+- Query executed without error AND returned data that matches intent = SUCCESS
+- Query had syntax error or execution error = FAILURE  
+- Query returned data but doesn't match intent = FAILURE
+- For "get all" or "list" intents, empty [] is acceptable (no data exists)
+- For "verify/check/confirm" intents, empty [] means verification FAILED
 
-JSON result:"""
+**OUTPUT FORMAT:**
+Return ONLY a JSON object with "success" (boolean) and "reason" (string with YOUR specific analysis).
+
+Example SUCCESS response:
+{{"success": true, "reason": "Query returned 1 row showing user John has admin role as expected"}}
+
+Example FAILURE response:
+{{"success": false, "reason": "Query returned 0 rows - no agent named Reumaysa has yahoo email domain"}}
+
+Your JSON analysis:"""
 
 
 def get_db_query_retry_prompt(
@@ -853,6 +1019,350 @@ def get_db_query_retry_prompt(
         
         ═══════════════════════════════════════════════════════════════════════════════════════
         🏁 **GENERATE FIXED SQL QUERY NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_db_query_action_prompt(
+    table: str,
+    intent: str,
+    schema_context: str = "",
+    stored_metadata: dict = None,
+) -> str:
+    """
+    Generate prompt for DUO to produce DB query action metadata.
+    
+    This prompt follows the same unified pattern as UI and API:
+    - ALWAYS includes BOTH stored_metadata AND schema_context sections
+    - If data missing, shows "No data found" message in that section
+    
+    Args:
+        table: The database table name (e.g., "agents", "users", "orders")
+        intent: User's intent describing what database action to perform
+        schema_context: Schema specification context for this table (optional)
+        stored_metadata: Previously stored action metadata from learning collection (optional)
+        
+    Returns:
+        Formatted prompt string for DUO
+    """
+    
+    # Build stored metadata section - ALWAYS present
+    stored_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📚 **STORED ACTION FROM LEARNING DATABASE**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if stored_metadata:
+        stored_section += f"""
+        ✅ A similar query was previously executed. Use as reference:
+        
+        • Action Key: {stored_metadata.get('action_key', 'unknown')}
+        • Intent: {stored_metadata.get('intent', 'unknown')}
+        • Query: {stored_metadata.get('query', 'unknown')}
+        • Table: {stored_metadata.get('table', 'unknown')}
+        • Status: {stored_metadata.get('status', 'unknown')}
+        • Expected Columns: {stored_metadata.get('expected_columns', 'N/A')}
+        • Expected Row Count: {stored_metadata.get('expected_row_count', 'N/A')}
+        """
+    else:
+        stored_section += """
+        ⚠️ No stored action found for this intent.
+        This is the FIRST TIME this query is being generated.
+        Use schema context to generate the query from scratch.
+        """
+    
+    stored_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    # Build schema context section - ALWAYS present
+    schema_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📖 **DATABASE SCHEMA CONTEXT**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if schema_context and schema_context.strip():
+        schema_section += f"""
+        {schema_context}
+        """
+    else:
+        schema_section += """
+        ⚠️ No schema context available.
+        Generate query based on standard MySQL conventions and table name.
+        """
+    
+    schema_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    return f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🎯 **DATABASE QUERY ACTION GENERATOR** - Generate SQL Query Metadata
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        **TABLE**: `{table}`
+        **INTENT**: "{intent}"
+        
+        {stored_section}
+        
+        {schema_section}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📋 **YOUR TASK**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        Generate a COMPLETE DB query action metadata JSON object that includes the SQL query.
+        
+        **RULES**:
+        1. Generate a unique `action_key` based on table + operation + purpose
+        2. Use the intent EXACTLY as provided
+        3. Determine the correct SQL operation (SELECT, INSERT, UPDATE, DELETE)
+        4. Build the complete executable SQL query
+        5. Use ONLY tables/columns from the provided schema
+        6. Include expected outcomes (columns, row count estimate)
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📤 **REQUIRED OUTPUT FORMAT** (JSON ONLY - NO MARKDOWN, NO EXPLANATION):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        {{
+            "action_key": "unique_action_identifier",
+            "intent": "exact intent as provided",
+            "table": "{table}",
+            "operation": "SELECT|INSERT|UPDATE|DELETE",
+            "query": "SELECT * FROM table WHERE condition;",
+            "expected_columns": ["column1", "column2"],
+            "expected_row_count": "single|multiple|none",
+            "description": "Brief description of what this query does"
+        }}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📌 **EXAMPLES**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1️⃣ SELECT all records:
+        {{
+            "action_key": "get_all_agents",
+            "intent": "get all agents from the system",
+            "table": "agents",
+            "operation": "SELECT",
+            "query": "SELECT * FROM agents;",
+            "expected_columns": ["id", "agent_name", "status", "created_at"],
+            "expected_row_count": "multiple",
+            "description": "Retrieves all agent records from the agents table"
+        }}
+
+        2️⃣ SELECT with condition:
+        {{
+            "action_key": "get_active_agents",
+            "intent": "get all active agents",
+            "table": "agents",
+            "operation": "SELECT",
+            "query": "SELECT * FROM agents WHERE status = 'active';",
+            "expected_columns": ["id", "agent_name", "status", "created_at"],
+            "expected_row_count": "multiple",
+            "description": "Retrieves only active agents from the agents table"
+        }}
+
+        3️⃣ SELECT single record by ID:
+        {{
+            "action_key": "get_agent_by_id",
+            "intent": "get agent with id 5",
+            "table": "agents",
+            "operation": "SELECT",
+            "query": "SELECT * FROM agents WHERE id = 5;",
+            "expected_columns": ["id", "agent_name", "status", "created_at"],
+            "expected_row_count": "single",
+            "description": "Retrieves specific agent by ID"
+        }}
+
+        4️⃣ COUNT records:
+        {{
+            "action_key": "count_all_agents",
+            "intent": "count how many agents exist",
+            "table": "agents",
+            "operation": "SELECT",
+            "query": "SELECT COUNT(*) as total FROM agents;",
+            "expected_columns": ["total"],
+            "expected_row_count": "single",
+            "description": "Counts total number of agents"
+        }}
+
+        5️⃣ Verify column exists:
+        {{
+            "action_key": "verify_agent_name_column",
+            "intent": "verify that the agents table contains an agent name column",
+            "table": "agents",
+            "operation": "SELECT",
+            "query": "SELECT agent_name FROM agents LIMIT 1;",
+            "expected_columns": ["agent_name"],
+            "expected_row_count": "single",
+            "description": "Verifies that agent_name column exists and is accessible"
+        }}
+
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations or comments outside JSON
+        ❌ NO markdown code blocks
+        ❌ NO corrections to user's text - use EXACTLY what they wrote
+        ❌ NO missing fields - ALL fields are REQUIRED
+        ❌ NO tables/columns not in the schema
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE COMPLETE DB QUERY ACTION METADATA JSON NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
+def get_db_query_retry_prompt_enhanced(
+    table: str,
+    intent: str,
+    failed_query: str,
+    error_message: str,
+    ai_analysis: str,
+    stored_metadata: dict,
+    schema_context: str,
+) -> str:
+    """
+    Generate ENHANCED retry prompt with AI analysis and all original context.
+    
+    This prompt includes:
+    - AI analysis from first attempt (why it failed)
+    - Original stored_metadata from learning database
+    - Original schema_context
+    - Error details
+
+    Args:
+        table: The database table name
+        intent: Original user intent
+        failed_query: The SQL query that failed
+        error_message: Error message from execution
+        ai_analysis: AI's analysis of why the first attempt failed
+        stored_metadata: Original stored action from learning database
+        schema_context: Database schema for reference
+    """
+    
+    # Build stored metadata section
+    stored_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📚 **ORIGINAL STORED ACTION FROM LEARNING DATABASE**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if stored_metadata:
+        stored_section += f"""
+        This action was used in the FIRST attempt and FAILED:
+        
+        - Action Key: {stored_metadata.get('action_key', 'unknown')}
+        - Intent: {stored_metadata.get('intent', 'unknown')}
+        - Query: {stored_metadata.get('query', 'unknown')}
+        - Table: {stored_metadata.get('table', 'unknown')}
+        - Status: {stored_metadata.get('status', 'unknown')}
+        """
+    else:
+        stored_section += """
+        No stored action was used (first attempt was generated from schema).
+        """
+    
+    stored_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    # Build schema context section
+    schema_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📖 **DATABASE SCHEMA CONTEXT**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if schema_context:
+        schema_section += f"""
+        {schema_context}
+        """
+    else:
+        schema_section += """
+        No schema documentation available.
+        """
+    
+    schema_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    # Build AI analysis section
+    analysis_section = f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🤖 **AI ANALYSIS OF FAILED ATTEMPT** (IMPORTANT - Learn from this!):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        The AI analyzed why the first attempt failed:
+        
+        {ai_analysis if ai_analysis else 'No AI analysis available'}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+    return f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🔄 **DB QUERY RETRY** - Fix Failed Query Using AI Analysis
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        **TABLE**: `{table}`
+        **INTENT**: "{intent}"
+        
+        {stored_section}
+        
+        {schema_section}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        ❌ **FAILED ATTEMPT DETAILS**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        The following SQL query was attempted and FAILED:
+        
+        💥 FAILED QUERY:
+        {failed_query}
+
+        🔴 ERROR MESSAGE:
+        {error_message}
+        
+        {analysis_section}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📋 **YOUR TASK**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1. **STUDY** the AI analysis to understand WHY the first attempt failed
+        2. **AVOID** repeating the same mistake
+        3. **REFER** to the schema context for correct table/column names
+        4. **GENERATE** a corrected SQL query
+
+        ⚡ **COMMON FIXES**:
+        - Table doesn't exist → Check schema for correct table name
+        - Unknown column → Check schema for correct column name
+        - Syntax error → Fix SQL syntax
+        - Ambiguous column → Add table alias prefix
+        - Data type mismatch → Cast or convert data types
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📤 **REQUIRED OUTPUT FORMAT** (JSON ONLY):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        {{
+            "action_key": "retry_query_identifier",
+            "intent": "{intent}",
+            "table": "{table}",
+            "operation": "SELECT|INSERT|UPDATE|DELETE",
+            "query": "CORRECTED SQL QUERY HERE;",
+            "expected_columns": ["col1", "col2"],
+            "expected_row_count": "single|multiple|none",
+            "description": "Brief description"
+        }}
+
+        🚫 NO explanations outside JSON, NO markdown code blocks
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE CORRECTED QUERY ACTION NOW** 🏁
         ═══════════════════════════════════════════════════════════════════════════════════════
         """
 
@@ -1129,6 +1639,182 @@ def get_ui_step_retry_prompt(
         """
 
 
+def get_ui_module_retry_prompt(
+    step_intent: str,
+    step_type: str,
+    module: str,
+    page_url: str,
+    failed_action: dict,
+    error: str,
+    ai_analysis: str,
+    stored_metadata: dict,
+    relevant_elements: list,
+    previous_steps: list = None,
+) -> str:
+    """
+    Generate ENHANCED retry prompt with AI analysis and all original context.
+    
+    This prompt includes:
+    - AI analysis from first attempt (why it failed)
+    - Original stored_metadata from learning database
+    - Fresh elements from current page
+    - All context from original prompt
+
+    Args:
+        step_intent: Original step intent
+        step_type: Given/When/Then/And
+        module: The UI module name
+        page_url: Current page URL
+        failed_action: The action that failed
+        error: Error message from execution
+        ai_analysis: AI's analysis of why the first attempt failed
+        stored_metadata: Original stored action from learning database
+        relevant_elements: Fresh elements from current page
+        previous_steps: List of previously executed steps
+    """
+
+    elements_str = "\n".join(
+        [f"  {i+1}. {elem[:400]}" for i, elem in enumerate(relevant_elements[:15])]
+    )
+    
+    previous_steps_str = ""
+    if previous_steps:
+        previous_steps_str = "\n".join([f"  - {s}" for s in previous_steps[-5:]])
+    
+    # Build stored metadata section
+    stored_section = """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📚 **ORIGINAL STORED ACTION FROM LEARNING DATABASE**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    if stored_metadata:
+        action_json = stored_metadata.get('action_json', {})
+        if isinstance(action_json, str):
+            try:
+                import json
+                action_json = json.loads(action_json)
+            except:
+                action_json = {}
+        
+        stored_section += f"""
+        This action was used in the FIRST attempt and FAILED:
+        
+        - Action Key: {stored_metadata.get('action_key', 'unknown')}
+        - Intent: {stored_metadata.get('intent', 'unknown')}
+        - Action Type: {action_json.get('type', 'unknown')}
+        - Locator: {action_json.get('locator', 'unknown')}
+        - Value: {action_json.get('value', 'N/A')}
+        - Status: {stored_metadata.get('status', 'unknown')}
+        """
+    else:
+        stored_section += """
+        No stored action was used (first attempt was with live HTML).
+        """
+    
+    stored_section += """
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    
+    # Build AI analysis section
+    analysis_section = f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🤖 **AI ANALYSIS OF FAILED ATTEMPT** (IMPORTANT - Learn from this!):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        The AI analyzed why the first attempt failed:
+        
+        {ai_analysis if ai_analysis else 'No AI analysis available'}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+    return f"""
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🔄 **UI ACTION RETRY** - Fix Failed Action Using AI Analysis
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        **STEP TYPE**: [{step_type}]
+        **STEP INTENT**: "{step_intent}"
+        **MODULE**: {module}
+        **PAGE URL**: {page_url}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📜 **PREVIOUS STEPS** (for context):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        {previous_steps_str if previous_steps_str else "  (None - this is the first step)"}
+        
+        {stored_section}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        ❌ **FAILED ATTEMPT DETAILS**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        The following action was attempted and FAILED:
+        
+        💥 FAILED ACTION:
+        {failed_action}
+
+        🔴 ERROR MESSAGE:
+        {error}
+        
+        {analysis_section}
+        
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🎯 **FRESH LIVE HTML ELEMENTS** (use these for new action):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        These are the CURRENT elements on the page. Use these to find a better locator:
+        
+        {elements_str}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📋 **YOUR TASK**:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        1. **STUDY** the AI analysis to understand WHY the first attempt failed
+        2. **AVOID** repeating the same mistake
+        3. **FIND** a better element from the fresh HTML elements above
+        4. **GENERATE** a new action with a corrected locator
+
+        ⚠️ **CRITICAL CONSTRAINTS** ⚠️
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        🚫 You may ONLY fix the LOCATOR/SELECTOR - NOT the values or text!
+        🚫 The "value", "text", "expected" fields MUST remain EXACTLY as in the failed action
+        🚫 If the element truly doesn't exist on the page, the action SHOULD FAIL
+        
+        ✅ You CAN change: "locator", "selector" fields
+        ✅ Use data-test, id, or unique class attributes when possible
+        ✅ Try a completely different selector strategy if the old one failed
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        📤 **REQUIRED OUTPUT FORMAT** (JSON ONLY):
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        Return the CORRECTED action JSON in the SAME format as the failed action.
+        
+        Example:
+        {{
+            "action_key": "retry_login_click",
+            "intent": "{step_intent}",
+            "action_json": {{
+                "type": "click",
+                "locator": "[data-test='login-button']"
+            }}
+        }}
+
+        🚫 **FORBIDDEN**:
+        ❌ NO explanations outside JSON
+        ❌ NO markdown code blocks
+        ❌ NO changing value/text fields
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        🏁 **GENERATE CORRECTED ACTION NOW** 🏁
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+
+
 def get_ui_step_failure_analysis_prompt(
     step_intent: str,
     step_type: str,
@@ -1254,9 +1940,10 @@ def get_ui_module_action_prompt(
     """
     Generate prompt for GitLab Duo to decide on action and return FULL METADATA dict.
     
-    DUO receives either:
-    - stored_metadata: Previous [correct] action from ChromaDB (to validate/reuse)
-    - relevant_elements: Live HTML elements (when no stored action or was [incorrect])
+    IMPORTANT: Both sections (STORED METADATA and LIVE HTML ELEMENTS) are ALWAYS included
+    in the prompt. The data inside depends on availability:
+    - stored_metadata: Shows data if [correct] action found, otherwise "No stored action found"
+    - relevant_elements: Shows data if retrieved, otherwise "No elements retrieved"
     
     DUO must return the SAME metadata format that will be stored:
     {
@@ -1278,39 +1965,57 @@ def get_ui_module_action_prompt(
         previous_steps: List of previously executed steps for context
     """
     
-    # Format stored metadata if provided
-    stored_context = ""
+    # ====== SECTION 1: STORED METADATA (ALWAYS PRESENT) ======
     if stored_metadata:
         stored_context = f"""
-        📦 STORED ACTION FROM LEARNING DATABASE (previously worked):
-        ───────────────────────────────────────────────────────────
-        Action Key: {stored_metadata.get('action_key', 'N/A')}
-        Intent: {stored_metadata.get('intent', 'N/A')}
-        Action Type: {stored_metadata.get('action_type', 'N/A')}
-        Locator: {stored_metadata.get('locator', 'N/A')}
-        Playwright Code: {stored_metadata.get('playwright_code', 'N/A')}
-        Status: {stored_metadata.get('status', 'N/A')}
-        ───────────────────────────────────────────────────────────
+        📦 STORED ACTION FROM LEARNING DATABASE:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        ✅ Found a [correct] stored action that previously worked!
         
-        ⚡ This action WORKED BEFORE. You can:
-        - REUSE it exactly if the intent matches
-        - MODIFY if the current intent is slightly different
+        • Action Key: {stored_metadata.get('action_key', 'N/A')}
+        • Intent: {stored_metadata.get('intent', 'N/A')}
+        • Action Type: {stored_metadata.get('action_type', 'N/A')}
+        • Locator: {stored_metadata.get('locator', 'N/A')}
+        • Playwright Code: {stored_metadata.get('playwright_code', 'N/A')}
+        • Status: {stored_metadata.get('status', 'N/A')}
+        
+        ⚡ RECOMMENDATION: REUSE this action if the intent matches exactly.
+           MODIFY only if the current intent is slightly different.
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    else:
+        stored_context = """
+        📦 STORED ACTION FROM LEARNING DATABASE:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        ❌ No stored action found for this intent in the learning database.
+        
+        This is a NEW action that needs to be generated from the live HTML elements below.
+        ═══════════════════════════════════════════════════════════════════════════════════════
         """
     
-    # Format live elements if provided
-    elements_context = ""
-    if relevant_elements:
+    # ====== SECTION 2: LIVE HTML ELEMENTS (ALWAYS PRESENT) ======
+    if relevant_elements and len(relevant_elements) > 0:
         elements_str = "\n".join(
-            [f"  {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:10])]
+            [f"        {i+1}. {elem[:300]}" for i, elem in enumerate(relevant_elements[:10])]
         )
         elements_context = f"""
         🎯 LIVE HTML ELEMENTS FROM CURRENT PAGE:
-        ───────────────────────────────────────────────────────────
+        ═══════════════════════════════════════════════════════════════════════════════════════
         {elements_str}
-        ───────────────────────────────────────────────────────────
         
-        ⚠️ No stored action found or previous action was [incorrect].
-        Analyze these elements and generate a NEW action.
+        ⚠️ Use these elements to GENERATE or VALIDATE the action.
+           If stored action exists, verify the locator still matches these elements.
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        """
+    else:
+        elements_context = """
+        🎯 LIVE HTML ELEMENTS FROM CURRENT PAGE:
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        ❌ No relevant elements retrieved from the current page.
+        
+        If stored action exists, use it directly.
+        If no stored action, this may be a navigation or special action type.
+        ═══════════════════════════════════════════════════════════════════════════════════════
         """
     
     # Format previous steps context
@@ -1318,7 +2023,7 @@ def get_ui_module_action_prompt(
     if previous_steps:
         prev_str = "\n".join(
             [
-                f"  - {s.get('step_type', '')} {s.get('intent', '')}: {s.get('status', 'pending')}"
+                f"        - {s.get('step_type', '')} {s.get('intent', '')}: {s.get('status', 'pending')}"
                 for s in previous_steps[-3:]
             ]
         )
@@ -1342,8 +2047,26 @@ def get_ui_module_action_prompt(
         Type: {step_type}
         Intent: {step_intent}
         {previous_context}
+        
         {stored_context}
+        
         {elements_context}
+
+        ═══════════════════════════════════════════════════════════════════════════════════════
+
+        ⚡ **DECISION LOGIC** ⚡
+        ═══════════════════════════════════════════════════════════════════════════════════════
+        
+        IF stored action exists AND matches current intent:
+            → REUSE the stored locator and action
+            → Verify against live HTML elements if available
+        
+        ELSE IF live HTML elements available:
+            → GENERATE new action from the live HTML elements
+            → Pick the best matching element for the intent
+        
+        ELSE:
+            → Handle as navigation or special action type
 
         ═══════════════════════════════════════════════════════════════════════════════════════
 

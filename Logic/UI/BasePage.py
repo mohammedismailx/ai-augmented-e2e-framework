@@ -178,7 +178,9 @@ class BasePage:
     # Maximum retry attempts (Trial 1: RAG, Trial 2: Live HTML)
     MAX_TRIALS = 2
 
-    def execute_by_intent(self, intent: str, rag_context=None) -> dict:
+    def execute_by_intent(
+        self, intent: str, rag_context=None, assert_success: bool = True
+    ) -> dict:
         """
         Execute UI test by Gherkin-style intent with RAG-based learning.
 
@@ -204,6 +206,8 @@ class BasePage:
         Args:
             intent: Multi-line Gherkin steps
             rag_context: RAG instance for learning storage
+            assert_success (bool): If True, raises AssertionError when any step fails.
+                                   Set to False for negative testing scenarios.
 
         Returns:
             dict with execution results
@@ -293,15 +297,16 @@ class BasePage:
                             # Log full stored metadata
                             logger.log_stored_metadata(stored_metadata)
                         else:
-                            # Not found or [incorrect] - get live HTML
+                            # Not found or [incorrect] - will rely on live HTML
                             logger.log_rag_retrieval(
                                 module=current_module,
                                 found=False,
                                 status=rag_result.get("status"),
                             )
 
-                    # === STEP 3: Get live HTML elements if needed ===
-                    if stored_metadata is None and top_k > 0:
+                    # === STEP 3: ALWAYS get live HTML elements (for validation) ===
+                    # Even if stored_metadata exists, we get live HTML so DUO can validate
+                    if top_k > 0:
                         logger.log(f"\n[HTML] Getting live page elements...")
                         html_content = self._get_page_html()
 
@@ -412,10 +417,37 @@ class BasePage:
                         # === ACTION FAILED ===
                         logger.log(f"[EXECUTE] Action failed")
 
-                        # If we used stored_metadata, try again with live HTML
+                        # Capture the failed action for retry analysis
+                        failed_action = duo_response
+                        error_msg = "Action execution failed"
+
+                        # If we used stored_metadata, try again with enhanced retry
                         if source == "stored_metadata" and not is_network_action:
                             logger.log(
-                                f"\n[RETRY] Stored action failed, trying with live HTML..."
+                                f"\n[RETRY] Stored action failed, trying with AI analysis..."
+                            )
+
+                            # STEP 1: Get AI analysis of why the action failed
+                            logger.log(f"[RETRY] Getting AI analysis of failure...")
+                            ai_analysis = self.ai_agent.run_agent_based_on_context(
+                                context="UI_STEP_FAILURE_ANALYSIS",
+                                step_intent=step_intent,
+                                step_type=step_type,
+                                failed_action=failed_action,
+                                error=error_msg,
+                                relevant_elements=(
+                                    relevant_elements[:5] if relevant_elements else []
+                                ),
+                                page_url=current_url,
+                                page_title=(
+                                    self.page.title()
+                                    if hasattr(self.page, "title")
+                                    else ""
+                                ),
+                                previous_steps=previous_steps,
+                            )
+                            logger.log(
+                                f"[RETRY] AI Analysis: {str(ai_analysis)[:200]}..."
                             )
 
                             # Mark old action as [incorrect] in store
@@ -434,7 +466,7 @@ class BasePage:
                                     url=current_url,
                                 )
 
-                            # Get live HTML elements
+                            # STEP 2: Get fresh live HTML elements
                             html_content = self._get_page_html()
                             if html_content:
                                 relevant_elements = intent_locator.find_elements_outerhtml_with_score_backoff(
@@ -450,15 +482,20 @@ class BasePage:
                                     relevant_elements, is_retry=True
                                 )
 
-                            # Send to DUO again with live HTML
-                            logger.log(f"[RETRY] Sending to DUO with live HTML...")
+                            # STEP 3: Use ENHANCED retry with AI analysis and all original context
+                            logger.log(
+                                f"[RETRY] Sending to DUO with AI analysis and fresh HTML..."
+                            )
                             duo_response = self.ai_agent.run_agent_based_on_context(
-                                context="UI_MODULE_ACTION",
+                                context="UI_MODULE_RETRY",
                                 step_intent=step_intent,
                                 step_type=step_type,
                                 module=current_module,
                                 page_url=current_url,
-                                stored_metadata=None,  # Force live HTML
+                                failed_action=failed_action,
+                                error=error_msg,
+                                ai_analysis=str(ai_analysis) if ai_analysis else "",
+                                stored_metadata=stored_metadata,  # Original stored metadata
                                 relevant_elements=relevant_elements,
                                 previous_steps=previous_steps,
                             )
@@ -468,7 +505,7 @@ class BasePage:
                                 logger.log_duo_response(duo_response, is_retry=True)
 
                                 step_result["duo_response"] = duo_response
-                                step_result["source"] = "live_html_retry"
+                                step_result["source"] = "ai_analysis_retry"
 
                                 action_json = duo_response.get("action_json", {})
                                 if isinstance(action_json, str):
@@ -481,7 +518,9 @@ class BasePage:
 
                                 if success:
                                     step_result["status"] = "passed"
-                                    logger.log(f"[RESULT] [{step_type}] PASSED (Retry)")
+                                    logger.log(
+                                        f"[RESULT] [{step_type}] PASSED (AI Retry)"
+                                    )
 
                                     # Store as [correct]
                                     if rag_context:
@@ -515,7 +554,7 @@ class BasePage:
                                             url=current_url,
                                         )
                                     raise Exception(
-                                        "Action execution failed after retry"
+                                        "Action execution failed after AI-assisted retry"
                                     )
                             else:
                                 raise Exception(
@@ -553,6 +592,12 @@ class BasePage:
                     result["error"] = f"Step failed: [{step_type}] {step_intent} - {e}"
                     result["steps"].append(step_result)
                     logger.end_session()
+
+                    # Assert on failure if enabled (don't silently return)
+                    if assert_success:
+                        raise AssertionError(
+                            f"Step Failed: [{step_type}] {step_intent} - {e}"
+                        )
                     return result
 
                 result["steps"].append(step_result)
@@ -571,6 +616,24 @@ class BasePage:
             logger.log(f"[ERROR] Execution failed: {e}")
 
         logger.end_session()
+
+        # ============================================================================
+        # ASSERT SUCCESS (if enabled)
+        # ============================================================================
+        if assert_success:
+            # Check overall success
+            if not result["success"]:
+                raise AssertionError(
+                    f"UI Execution Failed: {result.get('error', 'Unknown error')}"
+                )
+
+            # Check each step passed
+            for step in result.get("steps", []):
+                if step.get("status") != "passed":
+                    raise AssertionError(
+                        f"Step Failed: [{step.get('step_type')}] {step.get('intent')} - {step.get('error', 'Unknown error')}"
+                    )
+
         return result
 
     def _extract_module_from_url(self, url: str) -> str:

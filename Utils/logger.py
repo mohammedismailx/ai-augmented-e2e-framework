@@ -185,10 +185,11 @@ class IntentLogger:
     Automatically reads test ID and title from builtins.CURRENT_TEST_INFO.
     """
 
-    # Class-level log file paths
-    API_LOG_FILE = "api_with_intent_logs.txt"
-    DB_LOG_FILE = "db_with_intent_logs.txt"
-    UI_LOG_FILE = "ui_with_intent_logs.txt"
+    # Class-level log directory and file paths
+    LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+    API_LOG_FILE = os.path.join(LOG_DIR, "api_with_intent_logs.txt")
+    DB_LOG_FILE = os.path.join(LOG_DIR, "db_with_intent_logs.txt")
+    UI_LOG_FILE = os.path.join(LOG_DIR, "ui_with_intent_logs.txt")
 
     def __init__(self, log_file: str = None, test_type: str = "API"):
         """
@@ -228,6 +229,9 @@ class IntentLogger:
 
         # Get test info from builtins (set by pytest fixture)
         test_id, test_title = self._get_test_info_from_builtins()
+
+        # Ensure logs directory exists
+        os.makedirs(self.LOG_DIR, exist_ok=True)
 
         # Open file in append mode with explicit UTF-8 encoding (no BOM)
         # Using newline="" to prevent double line endings on Windows
@@ -453,26 +457,42 @@ Duration: {duration.total_seconds():.2f} seconds
 
         self.log(f"[PROMPT] ─────────────────────────────────────────────")
 
-    def log_duo_response(self, response: dict, is_retry: bool = False):
-        """Log full response from GitLab Duo."""
+    def log_duo_response(self, response, is_retry: bool = False):
+        """Log full response from GitLab Duo. Handles both dict and string responses."""
         import json
 
         tag = "[DUO RESPONSE RETRY]" if is_retry else "[DUO RESPONSE]"
 
         self.log(f"\n{tag} ═══════════════════════════════════════════════════")
         self.log(f"{tag} FULL RESPONSE FROM GITLAB DUO:")
-        self.log(f"{tag}   action_key: {response.get('action_key', 'N/A')}")
-        self.log(f"{tag}   intent: {response.get('intent', 'N/A')}")
-        self.log(f"{tag}   action_type: {response.get('action_type', 'N/A')}")
-        self.log(f"{tag}   locator: {response.get('locator', 'N/A')}")
 
-        action_json = response.get("action_json", {})
-        if isinstance(action_json, dict):
-            self.log(f"{tag}   action_json: {json.dumps(action_json)}")
+        # Handle string response (raw AI output)
+        if isinstance(response, str):
+            # Log first 1000 chars of raw response
+            if len(response) > 1000:
+                self.log(f"{tag} {response[:1000]}...")
+                self.log(f"{tag} ... (truncated)")
+            else:
+                self.log(f"{tag} {response}")
+        elif isinstance(response, dict):
+            # Log structured dict response
+            self.log(f"{tag}   action_key: {response.get('action_key', 'N/A')}")
+            self.log(f"{tag}   intent: {response.get('intent', 'N/A')}")
+            self.log(f"{tag}   action_type: {response.get('action_type', 'N/A')}")
+            self.log(f"{tag}   locator: {response.get('locator', 'N/A')}")
+
+            action_json = response.get("action_json", {})
+            if isinstance(action_json, dict):
+                self.log(f"{tag}   action_json: {json.dumps(action_json)}")
+            else:
+                self.log(f"{tag}   action_json: {action_json}")
+
+            self.log(
+                f"{tag}   playwright_code: {response.get('playwright_code', 'N/A')}"
+            )
         else:
-            self.log(f"{tag}   action_json: {action_json}")
+            self.log(f"{tag} {str(response)}")
 
-        self.log(f"{tag}   playwright_code: {response.get('playwright_code', 'N/A')}")
         self.log(f"{tag} ═══════════════════════════════════════════════════")
 
     def log_store_action(

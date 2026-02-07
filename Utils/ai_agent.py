@@ -17,12 +17,16 @@ from Resources.prompts import (
     get_db_query_generation_prompt,
     get_db_query_analysis_prompt,
     get_db_query_retry_prompt,
+    get_db_query_action_prompt,
+    get_db_query_retry_prompt_enhanced,
     get_ui_step_action_prompt,
     get_ui_step_verification_prompt,
     get_ui_step_retry_prompt,
     get_ui_step_failure_analysis_prompt,
     get_ui_module_action_prompt,
+    get_ui_module_retry_prompt,
     get_api_endpoint_action_prompt,
+    get_api_endpoint_retry_prompt,
 )
 from Libs.IntentLocatorLibrary import IntentLocatorLibrary
 from Libs.IntentQueriesLibrary import IntentQueriesLibrary
@@ -142,9 +146,51 @@ class AIAgent:
                 kwargs.get("previous_steps"),
                 kwargs.get("return_prompt", False),
             )
+        elif context == "UI_MODULE_RETRY":
+            return self.execute_ui_module_retry_context(
+                kwargs.get("step_intent"),
+                kwargs.get("step_type"),
+                kwargs.get("module"),
+                kwargs.get("page_url"),
+                kwargs.get("failed_action"),
+                kwargs.get("error"),
+                kwargs.get("ai_analysis"),
+                kwargs.get("stored_metadata"),
+                kwargs.get("relevant_elements"),
+                kwargs.get("previous_steps"),
+                kwargs.get("return_prompt", False),
+            )
         elif context == "API_ENDPOINT_ACTION":
             return self.execute_api_endpoint_action_context(
                 kwargs.get("prompt"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "API_ENDPOINT_RETRY":
+            return self.execute_api_endpoint_retry_context(
+                kwargs.get("resource"),
+                kwargs.get("intent"),
+                kwargs.get("failed_curl"),
+                kwargs.get("error_output"),
+                kwargs.get("ai_analysis"),
+                kwargs.get("stored_metadata"),
+                kwargs.get("swagger_context"),
+                kwargs.get("base_url"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "DB_QUERY_ACTION":
+            return self.execute_db_query_action_context(
+                kwargs.get("prompt"),
+                kwargs.get("return_prompt", False),
+            )
+        elif context == "DB_QUERY_RETRY":
+            return self.execute_db_query_retry_context(
+                kwargs.get("table"),
+                kwargs.get("intent"),
+                kwargs.get("failed_query"),
+                kwargs.get("error_message"),
+                kwargs.get("ai_analysis"),
+                kwargs.get("stored_metadata"),
+                kwargs.get("schema_context"),
                 kwargs.get("return_prompt", False),
             )
         return None
@@ -446,41 +492,79 @@ class AIAgent:
                 # Try to extract JSON from the response
                 import re
 
-                # Look for JSON object with success key - handle nested content
-                # Pattern matches: {"success": true/false, "reason": "..."}
-                json_pattern = r'\{\s*"success"\s*:\s*(true|false)\s*,\s*"reason"\s*:\s*"([^"]*(?:\\.[^"]*)*)"\s*\}'
-                json_match = re.search(json_pattern, analysis_response, re.IGNORECASE)
-
-                if json_match:
-                    success_str = json_match.group(1).lower()
-                    reason = json_match.group(2)
-                    analysis = {"success": success_str == "true", "reason": reason}
-                else:
-                    # Fallback: try to find any JSON object
-                    # Find the last occurrence of {"success"
-                    json_start = analysis_response.rfind('{"success"')
-                    if json_start != -1:
-                        # Find matching closing brace
-                        json_str = analysis_response[json_start:]
-                        brace_count = 0
-                        json_end = 0
-                        for i, char in enumerate(json_str):
-                            if char == "{":
-                                brace_count += 1
-                            elif char == "}":
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    json_end = i + 1
-                                    break
-                        if json_end > 0:
+                # Find the last occurrence of {"success" - this is the actual AI response
+                json_start = analysis_response.rfind('{"success"')
+                if json_start != -1:
+                    # Extract from {"success" to end and find the closing brace
+                    json_str = analysis_response[json_start:]
+                    brace_count = 0
+                    json_end = 0
+                    for i, char in enumerate(json_str):
+                        if char == "{":
+                            brace_count += 1
+                        elif char == "}":
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_end = i + 1
+                                break
+                    if json_end > 0:
+                        try:
                             analysis = json.loads(json_str[:json_end])
-                        else:
+                            # Validate the analysis has required keys
+                            if "success" not in analysis:
+                                analysis["success"] = False
+                            # Check if AI returned placeholder text instead of actual analysis
+                            placeholder_phrases = [
+                                "explanation",
+                                "Describe exactly WHY",
+                                "YOUR specific analysis",
+                            ]
+                            reason = analysis.get("reason", "")
+                            if not reason or any(
+                                p in reason for p in placeholder_phrases
+                            ):
+                                # Generate a meaningful reason based on the result
+                                analysis["reason"] = (
+                                    "AI did not provide detailed analysis"
+                                )
+                        except json.JSONDecodeError:
+                            # Fallback regex pattern for simpler cases
+                            simple_pattern = r'"success"\s*:\s*(true|false)'
+                            reason_pattern = r'"reason"\s*:\s*"([^"]+)"'
+
+                            success_match = re.search(
+                                simple_pattern, json_str, re.IGNORECASE
+                            )
+                            reason_match = re.search(
+                                reason_pattern, json_str, re.IGNORECASE
+                            )
+
                             analysis = {
-                                "success": False,
-                                "reason": "Could not parse JSON from response",
+                                "success": (
+                                    success_match.group(1).lower() == "true"
+                                    if success_match
+                                    else False
+                                ),
+                                "reason": (
+                                    reason_match.group(1)
+                                    if reason_match
+                                    else "Could not parse reason from response"
+                                ),
                             }
                     else:
+                        analysis = {
+                            "success": False,
+                            "reason": "Could not find complete JSON in response",
+                        }
+                else:
+                    # Last resort: try direct JSON parse
+                    try:
                         analysis = json.loads(analysis_response)
+                    except json.JSONDecodeError:
+                        analysis = {
+                            "success": False,
+                            "reason": f"No JSON found in response: {analysis_response[:200]}",
+                        }
             else:
                 analysis = {"success": False, "reason": "No response from AI agent"}
         except json.JSONDecodeError:
@@ -964,6 +1048,212 @@ class AIAgent:
             file_name="api_endpoint_action.json",
             constraints="Return ONLY valid JSON with action_key, intent, resource, method, endpoint, curl, expected_status, request_body, and headers",
             backstory="You are an expert in REST API automation and test learning systems...",
+        )
+
+        return response
+
+    # ==================== DB QUERY ACTION CONTEXT ====================
+
+    def execute_db_query_action_context(
+        self,
+        prompt: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate DB query action metadata from GitLab Duo.
+
+        This is the DB equivalent of execute_ui_module_action_context and
+        execute_api_endpoint_action_context.
+
+        DUO receives a prompt (built by get_db_query_action_prompt) containing:
+        - Intent (e.g., "get all agents")
+        - Table (e.g., "agents")
+        - BOTH stored_metadata from learning collection AND schema_context
+
+        DUO returns full action metadata for storage:
+        {
+            "action_key": "get_all_agents",
+            "intent": "get all agents",
+            "table": "agents",
+            "operation": "SELECT",
+            "query": "SELECT * FROM agents;",
+            "expected_columns": ["id", "name", "status"],
+            "expected_row_count": "multiple",
+            "description": "Retrieves all agents from the table"
+        }
+
+        Args:
+            prompt: Pre-built prompt from get_db_query_action_prompt
+            return_prompt: If True, return the prompt instead of executing
+
+        Returns:
+            Raw AI response string (parsing done by caller)
+        """
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert database engineer. You analyze database intents "
+            "and return complete SQL query metadata objects that can be "
+            "stored and reused. Your responses must be valid JSON with all required fields."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="db_query_action.json",
+            constraints="Return ONLY valid JSON with action_key, intent, table, operation, query, expected_columns, expected_row_count, and description",
+            backstory="You are an expert in MySQL database automation and test learning systems...",
+        )
+
+        return response
+
+    # ==================== ENHANCED RETRY CONTEXTS ====================
+
+    def execute_ui_module_retry_context(
+        self,
+        step_intent: str,
+        step_type: str,
+        module: str,
+        page_url: str,
+        failed_action: dict,
+        error: str,
+        ai_analysis: str,
+        stored_metadata: dict,
+        relevant_elements: list,
+        previous_steps: list = None,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate corrected UI action using AI analysis and all original context.
+
+        This is the ENHANCED retry that includes:
+        - AI analysis from first attempt
+        - Original stored_metadata
+        - Fresh live HTML elements
+        - All context from original prompt
+        """
+        prompt = get_ui_module_retry_prompt(
+            step_intent=step_intent,
+            step_type=step_type,
+            module=module,
+            page_url=page_url,
+            failed_action=failed_action,
+            error=error,
+            ai_analysis=ai_analysis,
+            stored_metadata=stored_metadata,
+            relevant_elements=relevant_elements,
+            previous_steps=previous_steps,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert UI automation engineer. You analyze failed actions "
+            "and AI feedback to generate corrected Playwright actions with better locators."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="ui_retry_action.json",
+            constraints="Return ONLY valid JSON with corrected action. Do NOT change value/text fields.",
+            backstory="You are an expert in Playwright and UI test self-healing...",
+        )
+
+        return response
+
+    def execute_api_endpoint_retry_context(
+        self,
+        resource: str,
+        intent: str,
+        failed_curl: str,
+        error_output: str,
+        ai_analysis: str,
+        stored_metadata: dict,
+        swagger_context: str,
+        base_url: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate corrected API curl command using AI analysis and all original context.
+
+        This is the ENHANCED retry that includes:
+        - AI analysis from first attempt
+        - Original stored_metadata
+        - Original swagger_context
+        - Error details
+        """
+        prompt = get_api_endpoint_retry_prompt(
+            resource=resource,
+            intent=intent,
+            failed_curl=failed_curl,
+            error_output=error_output,
+            ai_analysis=ai_analysis,
+            stored_metadata=stored_metadata,
+            swagger_context=swagger_context,
+            base_url=base_url,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert API automation engineer. You analyze failed API requests "
+            "and AI feedback to generate corrected curl commands."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="api_retry_curl.txt",
+            constraints="Return ONLY the corrected curl command, single line, no explanations.",
+            backstory="You are an expert in REST API debugging and automation...",
+        )
+
+        return response
+
+    def execute_db_query_retry_context(
+        self,
+        table: str,
+        intent: str,
+        failed_query: str,
+        error_message: str,
+        ai_analysis: str,
+        stored_metadata: dict,
+        schema_context: str,
+        return_prompt: bool = False,
+    ):
+        """
+        Generate corrected DB query using AI analysis and all original context.
+
+        This is the ENHANCED retry that includes:
+        - AI analysis from first attempt
+        - Original stored_metadata
+        - Original schema_context
+        - Error details
+        """
+        prompt = get_db_query_retry_prompt_enhanced(
+            table=table,
+            intent=intent,
+            failed_query=failed_query,
+            error_message=error_message,
+            ai_analysis=ai_analysis,
+            stored_metadata=stored_metadata,
+            schema_context=schema_context,
+        )
+
+        if return_prompt:
+            return prompt
+
+        self._initialize_conversation(
+            "You are an expert database engineer. You analyze failed SQL queries "
+            "and AI feedback to generate corrected queries with proper syntax."
+        )
+
+        response = self._prompt_agent(
+            prompt,
+            file_name="db_retry_query.json",
+            constraints="Return ONLY valid JSON with corrected query action metadata.",
+            backstory="You are an expert in MySQL debugging and query optimization...",
         )
 
         return response

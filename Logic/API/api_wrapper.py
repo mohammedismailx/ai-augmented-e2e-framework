@@ -137,29 +137,30 @@ class APIWrapper:
     def execute_by_intent(
         self,
         intent: str,
-        resource: str = None,
         base_url: str = None,
         rag_instance=None,
         max_retries: int = 2,
+        assert_success: bool = True,
     ) -> dict:
         """
         Execute an API call based on natural language intent using ChromaDB Learning + RAG + GitLab Duo.
 
-        LEARNING FLOW (same pattern as UI):
-        1. RETRIEVE: Search "api_endpoint_learning" collection for stored action by intent
-           - If [correct] found → send stored_metadata to DUO for validation
-           - If not found or [incorrect] → proceed to swagger
-        2. SWAGGER: Retrieve endpoint context from "api_swagger" collection
-        3. DUO: Generate action metadata (action_key, method, endpoint, curl, etc.)
-        4. EXECUTE: Execute the generated curl command
-        5. STORE: Store result with [correct] (status != 404) or [incorrect] status
+        MULTI-LAYER DOCUMENT FLOW:
+        1. EXTRACT RESOURCE: TF-IDF search on "api_swagger" to extract resource from intent
+        2. RETRIEVE FROM LEARNING: Search "api_endpoint_learning" for stored [correct] action
+        3. RETRIEVE FROM SWAGGER: Get swagger context (always, for validation)
+        4. AUGMENT PROMPT: Include BOTH stored_metadata AND swagger_context
+        5. DUO: Generate action metadata (action_key, method, endpoint, curl, etc.)
+        6. EXECUTE: Execute the generated curl command
+        7. STORE: Store result with [correct] (status != 404) or [incorrect] status
 
         Args:
             intent (str): Natural language intent (e.g., "delete book with id 5")
-            resource (str): API resource name (e.g., "books", "users"). If not provided, extracted from intent.
             base_url (str): Base URL for the API. Uses instance base_url if not provided.
             rag_instance: RAG instance with embedded swagger. Uses instance rag_instance if not provided.
             max_retries (int): Maximum number of retry attempts for failed curl execution
+            assert_success (bool): If True, raises AssertionError when AI analysis returns failure.
+                                   Set to False for negative testing scenarios.
 
         Returns:
             dict: Structured result with success status, curl command, response, and analysis
@@ -170,10 +171,6 @@ class APIWrapper:
         if rag_instance is None:
             rag_instance = self.rag_instance
 
-        # Extract resource from intent if not provided
-        if resource is None:
-            resource = self._extract_resource_from_intent(intent)
-
         # Initialize logger with API test type
         logger = IntentLogger(test_type="API")
         logger.start_session(intent=intent)
@@ -183,14 +180,13 @@ class APIWrapper:
             f"[INTENT EXECUTION WITH LEARNING] Starting intent-based API execution"
         )
         logger.log(f"[INTENT] {intent}")
-        logger.log(f"[RESOURCE] {resource}")
         logger.log(f"[BASE URL] {base_url}")
         logger.log(f"{'='*100}")
 
         result = {
             "success": False,
             "intent": intent,
-            "resource": resource,
+            "resource": None,
             "base_url": base_url,
             "curl_command": None,
             "status_code": None,
@@ -217,21 +213,43 @@ class APIWrapper:
                 return result
 
         # ============================================================================
-        # STEP 1: RETRIEVE FROM LEARNING COLLECTION
+        # STEP 1: EXTRACT ENDPOINT FROM SWAGGER BY INTENT (TF-IDF)
+        # ============================================================================
+        logger.log_section("[STEP 1] EXTRACT ENDPOINT FROM SWAGGER BY INTENT")
+
+        swagger_match = rag_instance.extract_resource_from_swagger_by_intent(intent)
+
+        resource = swagger_match.get("resource", "unknown")
+        method = swagger_match.get("method", "GET")
+        endpoint_pattern = swagger_match.get("endpoint_pattern", "")
+        swagger_context = swagger_match.get("swagger_context", "")
+
+        result["resource"] = resource
+
+        logger.log(f"[RESOURCE] Extracted: {resource}")
+        logger.log(f"[METHOD] {method}")
+        logger.log(f"[ENDPOINT PATTERN] {endpoint_pattern}")
+        if swagger_context:
+            logger.log(f"[SWAGGER] Found context ({len(swagger_context)} chars)")
+
+        # ============================================================================
+        # STEP 2: RETRIEVE FROM LEARNING COLLECTION (by endpoint pattern)
         # ============================================================================
         logger.log_section(
-            "[STEP 1] CHROMADB - RETRIEVING FROM API LEARNING COLLECTION"
+            "[STEP 2] CHROMADB - RETRIEVING FROM API LEARNING COLLECTION"
         )
 
-        stored_action = rag_instance.retrieve_api_action_for_intent(resource, intent)
+        # Use endpoint-based retrieval instead of intent-based
+        stored_action = rag_instance.retrieve_api_action_for_endpoint(
+            resource=resource, method=method, endpoint_pattern=endpoint_pattern
+        )
         stored_metadata = None
-        swagger_context = None
 
         if stored_action["found"] and stored_action["status"] == "[correct]":
             stored_metadata = stored_action["stored_metadata"]
             result["learning_source"] = "stored"
             logger.log(
-                f"\n[OK] Found [correct] stored action (match_score: {stored_action['match_score']:.3f})"
+                f"\n[OK] Found [correct] stored action for endpoint: {method} {endpoint_pattern}"
             )
             logger.log_titled_block(
                 "STORED METADATA", json.dumps(stored_metadata, indent=2), max_chars=3000
@@ -239,27 +257,31 @@ class APIWrapper:
         else:
             if stored_action["found"]:
                 logger.log(
-                    f"\n[INFO] Found stored action but status is {stored_action['status']}, fetching swagger context..."
+                    f"\n[INFO] Found stored action but status is {stored_action['status']}"
                 )
             else:
                 logger.log(
-                    f"\n[INFO] No stored action found for this intent, fetching swagger context..."
+                    f"\n[INFO] No stored action found for endpoint: {method} {endpoint_pattern}"
                 )
+            result["learning_source"] = "swagger"
 
-            # Retrieve swagger context
-            swagger_contexts = rag_instance.retrieve_endpoints_by_intent(
-                intent, top_k=1
-            )
+        # ============================================================================
+        # STEP 3: RETRIEVE SWAGGER CONTEXT (ALWAYS, for validation)
+        # ============================================================================
+        logger.log_section("[STEP 3] SWAGGER CONTEXT")
+
+        # If we didn't get swagger_context in step 1, try to get it now
+        if not swagger_context:
+            swagger_contexts = rag_instance.retrieve_swagger_for_intent(intent, top_k=1)
             if swagger_contexts:
                 swagger_context = swagger_contexts[0]
-                result["learning_source"] = "swagger"
-                logger.log(
-                    f"\n[OK] Found swagger context ({len(swagger_context)} chars)"
-                )
-                logger.log_titled_block(
-                    "SWAGGER CONTEXT", swagger_context, max_chars=3000
-                )
-            else:
+
+        if swagger_context:
+            logger.log_titled_block("SWAGGER CONTEXT", swagger_context, max_chars=3000)
+        else:
+            logger.log("[WARNING] No swagger context available")
+            # If no swagger and no stored metadata, we can't proceed
+            if not stored_metadata:
                 result["error"] = (
                     f"No matching API endpoints found for intent: '{intent}'"
                 )
@@ -270,15 +292,14 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 2: GITLAB DUO - GENERATE API ACTION METADATA
+        # STEP 4: GITLAB DUO - GENERATE API ACTION METADATA
         # ============================================================================
-        logger.log_section("[STEP 2] GITLAB DUO - GENERATING API ACTION METADATA")
-        logger.log(
-            f"[Source] Using {'stored metadata' if stored_metadata else 'swagger context'}"
-        )
+        logger.log_section("[STEP 4] GITLAB DUO - GENERATING API ACTION METADATA")
+        logger.log(f"[Source] Stored metadata: {'Yes' if stored_metadata else 'No'}")
+        logger.log(f"[Source] Swagger context: {'Yes' if swagger_context else 'No'}")
         logger.log(f"[Sending request to GitLab Duo...]")
 
-        # Build the prompt
+        # Build the prompt - ALWAYS include BOTH stored_metadata AND swagger_context
         duo_prompt = get_api_endpoint_action_prompt(
             resource=resource,
             intent=intent,
@@ -334,9 +355,9 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 3: EXECUTE CURL COMMAND
+        # STEP 5: EXECUTE CURL COMMAND
         # ============================================================================
-        logger.log_section("[STEP 3] EXECUTING CURL COMMAND")
+        logger.log_section("[STEP 5] EXECUTING CURL COMMAND")
 
         attempt = 0
         execution_result = None
@@ -376,29 +397,39 @@ class APIWrapper:
                 logger.log(f"Error: {error_msg}")
 
                 if attempt < max_retries:
+                    # STEP 1: Get AI analysis of why the request failed
+                    logger.log(f"\n[RETRY] Getting AI analysis of failure...")
+                    ai_analysis = self.ai_agent.analyze_api_response(
+                        intent=intent,
+                        curl_command=curl_command,
+                        response=error_msg,
+                        expected_status=200,
+                    )
+                    logger.log(f"[RETRY] AI Analysis: {str(ai_analysis)[:200]}...")
+
+                    # STEP 2: Use ENHANCED retry with AI analysis and all original context
                     logger.log(
-                        f"\n[RETRY] Asking GitLab Duo to fix the curl command..."
+                        f"\n[RETRY] Asking GitLab Duo with AI analysis to fix curl..."
                     )
 
-                    retry_result = self.ai_agent.retry_curl_generation(
+                    retry_response = self.ai_agent.run_agent_based_on_context(
+                        context="API_ENDPOINT_RETRY",
+                        resource=resource,
                         intent=intent,
-                        original_curl=curl_command,
+                        failed_curl=curl_command,
                         error_output=error_msg,
+                        ai_analysis=str(ai_analysis) if ai_analysis else "",
+                        stored_metadata=stored_metadata,  # Original stored metadata
                         swagger_context=swagger_context or "",
                         base_url=base_url,
-                        return_prompt=True,
+                        return_prompt=False,
                     )
 
-                    if isinstance(retry_result, tuple):
-                        fixed_curl, retry_prompt = retry_result
-                    else:
-                        fixed_curl = retry_result
-                        retry_prompt = "(Prompt not available)"
+                    fixed_curl = retry_response
+                    retry_prompt = "(Enhanced retry with AI analysis)"
 
                     result["prompts"][f"retry_{attempt+1}"] = retry_prompt
                     result["responses"][f"retry_{attempt+1}"] = fixed_curl
-
-                    logger.log_prompt(retry_prompt)
 
                     if fixed_curl:
                         logger.log_ai_response(fixed_curl)
@@ -419,9 +450,9 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 4: STORE RESULT IN LEARNING COLLECTION
+        # STEP 6: STORE RESULT IN LEARNING COLLECTION
         # ============================================================================
-        logger.log_section("[STEP 4] STORING RESULT IN API LEARNING COLLECTION")
+        logger.log_section("[STEP 6] STORING RESULT IN API LEARNING COLLECTION")
 
         # Determine status: [correct] if status != 404, else [incorrect]
         actual_status = result["status_code"]
@@ -432,25 +463,30 @@ class APIWrapper:
         logger.log(f"[Actual Status Code] {actual_status}")
         logger.log(f"[Learning Status] {learning_status}")
 
-        # Store the action in ChromaDB
+        # Store the action in ChromaDB using endpoint pattern as doc_id
         rag_instance.store_api_action_from_duo(
             resource=resource,
             duo_response=action_metadata,
+            execution_result={
+                "status_code": actual_status,
+                "response_body": result["response_body"],
+            },
             status=learning_status,
-            curl=result["curl_command"],
-            actual_status=actual_status,
-            request_body=result["request_body"],
-            response_body=result["response_body"],
+            base_url=base_url,
+            method=method,
+            endpoint_pattern=endpoint_pattern,
         )
 
-        logger.log(f"[OK] Stored action with status {learning_status}")
+        logger.log(
+            f"[OK] Stored action with status {learning_status} for endpoint: {method} {endpoint_pattern}"
+        )
 
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 5: GITLAB DUO - ANALYZE RESPONSE
+        # STEP 7: GITLAB DUO - ANALYZE RESPONSE
         # ============================================================================
-        logger.log_section("[STEP 5] GITLAB DUO - ANALYZING RESPONSE")
+        logger.log_section("[STEP 7] GITLAB DUO - ANALYZING RESPONSE")
         logger.log(f"[Sending response to GitLab Duo for analysis...]")
 
         analysis_result = self.ai_agent.analyze_api_response(
@@ -483,9 +519,9 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 6: PARSE ANALYSIS AND DETERMINE SUCCESS
+        # STEP 8: PARSE ANALYSIS AND DETERMINE SUCCESS
         # ============================================================================
-        logger.log_section("[STEP 6] PARSING AI ANALYSIS RESULT")
+        logger.log_section("[STEP 8] PARSING AI ANALYSIS RESULT")
 
         analysis_json = self._parse_analysis_json(analysis)
         result["analysis_result"] = analysis_json
@@ -512,7 +548,7 @@ class APIWrapper:
         logger.log_step_separator()
 
         # ============================================================================
-        # STEP 7: FINAL SUMMARY
+        # FINAL SUMMARY
         # ============================================================================
 
         # Log comprehensive summary
@@ -541,6 +577,14 @@ class APIWrapper:
 
         # End logging session
         logger.end_session()
+
+        # ============================================================================
+        # STEP 9: ASSERT SUCCESS (if enabled)
+        # ============================================================================
+        if assert_success and not result["success"]:
+            raise AssertionError(
+                f"AI Analysis Failed: {result.get('reason', 'No reason provided')}"
+            )
 
         return result
 
@@ -759,6 +803,43 @@ class APIWrapper:
 
         return curl_command.strip()
 
+    def _convert_quotes_for_windows(self, curl_command: str) -> str:
+        """
+        Convert single quotes to double quotes for Windows cmd.exe compatibility.
+
+        On Windows, single quotes are not recognized as string delimiters.
+        This method converts 'value' to "value" while handling nested quotes.
+
+        Args:
+            curl_command: The curl command with potentially single quotes
+
+        Returns:
+            Curl command with quotes converted for Windows
+        """
+        import re
+
+        # Simple approach: replace single quotes with double quotes
+        # This works for most API calls where we have:
+        #   curl -X GET 'https://...' -H 'Content-Type: application/json'
+
+        # First, handle JSON data that might have nested quotes
+        # Pattern: -d '{"key": "value"}'
+        # Convert to: -d "{\"key\": \"value\"}"
+
+        def replace_json_data(match):
+            json_content = match.group(1)
+            # Escape existing double quotes in JSON
+            escaped_json = json_content.replace('"', '\\"')
+            return f'-d "{escaped_json}"'
+
+        # Replace -d 'json' patterns
+        result = re.sub(r"-d\s+'([^']*)'", replace_json_data, curl_command)
+
+        # Replace remaining single quotes with double quotes (for URLs, headers, etc.)
+        result = result.replace("'", '"')
+
+        return result
+
     def _execute_curl(self, curl_command: str) -> dict:
         """
         Execute curl command via subprocess.
@@ -784,6 +865,14 @@ class APIWrapper:
         # Modify curl to include -w for status code and -s for silent mode
         # Also add -k for SSL bypass if not already present
         modified_curl = curl_command
+
+        # On Windows, convert single quotes to double quotes for cmd.exe compatibility
+        is_windows = platform.system().lower() == "windows"
+        if is_windows:
+            # Replace single quotes with double quotes, but be careful with nested quotes
+            # First, escape any existing double quotes inside single-quoted strings
+            # Then replace single quotes with double quotes
+            modified_curl = self._convert_quotes_for_windows(modified_curl)
 
         if "-k" not in modified_curl:
             # Add -k after 'curl'

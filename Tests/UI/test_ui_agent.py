@@ -14,9 +14,9 @@ from Logic.UI.Login.LoginPage import LoginPage
 
 class TestLoginSelfHealing:
     @pytest.mark.id("UI-001")
-    @pytest.mark.title("Login Flow - Standard User")
+    @pytest.mark.title("Correct Login Flow - Standard User")
     def test_login_flow_standard_user(self, ui_page, ui_context):
-        result = ui_page.execute_by_intent(
+        ui_page.execute_by_intent(
             intent="""
             Given navigate to saucedemo.base_url page
             Given I am on the login page
@@ -24,19 +24,27 @@ class TestLoginSelfHealing:
             And I fill password with secret_sauce
             And I click login button
             Then I should see the inventory page
-            Then Header should be Products
+            Then Page Header should be Swag Labs
+
             """,
             rag_context=ui_context,
         )
 
-        # Assertions
-        assert result["success"] is True, f"Login failed: {result.get('error')}"
-
-        # Verify all steps passed
-        for step in result["steps"]:
-            assert step["status"] == "passed", f"Step failed: {step}"
-
-        print("✓ Login flow test passed")
+    # @pytest.mark.id("UI-002")
+    # @pytest.mark.title("Incorrect Login Flow - Standard User")
+    # def test_login_flow_standard_user(self, ui_page, ui_context):
+    #     ui_page.execute_by_intent(
+    #         intent="""
+    #         Given navigate to saucedemo.base_url page
+    #         Given I am on the login page
+    #         When I fill username with standard_user
+    #         And I fill password with secret_sauce
+    #         And I click login button
+    #         Then I should see the inventory page
+    #         Then Page Header should be Emirates Airlines
+    #         """,
+    #         rag_context=ui_context,
+    #     )
 
     # @pytest.mark.id("UI-NET-002")
     # @pytest.mark.title("Validate Specific API Response")
@@ -58,9 +66,6 @@ class TestLoginSelfHealing:
     #         rag_context=ui_context,
     #     )
 
-    #     # Assertions - this is what makes the test actually pass/fail!
-    #     assert result["success"] is True, f"Test failed: {result.get('error')}"
-
     # @pytest.mark.id("UI-NET-002")
     # @pytest.mark.title("Validate Specific API Response")
     # def test_validate_specific_api(self, ui_page, ui_context):
@@ -71,6 +76,3 @@ class TestLoginSelfHealing:
     #         """,
     #         rag_context=ui_context,
     #     )
-
-    #     # Assertions - this is what makes the test actually pass/fail!
-    #     assert result["success"] is True, f"Test failed: {result.get('error')}"

@@ -636,6 +636,85 @@
             }
         }
 
+        /* Step Progress List for UI Tests */
+        .step-progress-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .step-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--gray-100);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            border-left: 3px solid var(--gray-400);
+        }
+
+        .step-item.passed {
+            border-left-color: var(--success);
+            background: rgba(72, 187, 120, 0.08);
+        }
+
+        .step-item.failed {
+            border-left-color: var(--danger);
+            background: rgba(245, 101, 101, 0.08);
+        }
+
+        .step-number {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--gray-300);
+            color: var(--gray-700);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .step-item.passed .step-number {
+            background: var(--success);
+            color: white;
+        }
+
+        .step-item.failed .step-number {
+            background: var(--danger);
+            color: white;
+        }
+
+        .step-type {
+            color: var(--gray-500);
+            font-weight: 600;
+            font-size: 0.7rem;
+            min-width: 50px;
+        }
+
+        .step-intent {
+            flex: 1;
+            color: var(--gray-700);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .step-status {
+            flex-shrink: 0;
+        }
+
+        .step-status.passed {
+            color: var(--success);
+        }
+
+        .step-status.failed {
+            color: var(--danger);
+        }
+
         /* Footer */
         .footer-actions {
             background: white;
@@ -1253,6 +1332,11 @@
                     JSON.parse(content); // Validate JSON
                     document.getElementById('swagger-content').value = content;
                     document.getElementById('swagger-file-name').textContent = `✓ ${file.name} loaded`;
+
+                    // Save swagger to localStorage for persistence
+                    localStorage.setItem('swaggerContent', content);
+                    localStorage.setItem('swaggerFileName', file.name);
+
                     showToast('Swagger file loaded successfully', 'success');
                 } catch (err) {
                     showToast('Invalid JSON file', 'error');
@@ -1339,6 +1423,15 @@
 
                 if (result.success) {
                     moduleConfig.api.base_url = baseUrl;
+
+                    // Save swagger to localStorage if provided
+                    if (swaggerContent) {
+                        localStorage.setItem('swaggerContent', swaggerContent);
+                        // Keep existing file name or set default
+                        if (!localStorage.getItem('swaggerFileName')) {
+                            localStorage.setItem('swaggerFileName', 'swagger.json');
+                        }
+                    }
 
                     // Update status
                     const status = document.getElementById('api-status');
@@ -1571,9 +1664,12 @@
             hideLoading();
             renderIntents();
 
-            if (selectedIntentId === id) {
-                renderAnalysis(intent);
-            }
+            // Auto-select and show analysis for the completed test
+            selectedIntentId = id;
+            document.querySelectorAll('.intent-row').forEach(row => {
+                row.classList.toggle('selected', row.dataset.id === id);
+            });
+            renderAnalysis(intent);
 
             saveSession();
         }
@@ -1588,6 +1684,8 @@
             }
 
             showLoading(`Running ${moduleIntents.length} tests...`);
+
+            let lastIntent = null;
 
             for (const intent of moduleIntents) {
                 intent.status = 'running';
@@ -1609,6 +1707,14 @@
                 }
 
                 renderIntents();
+                lastIntent = intent;
+
+                // Update analysis panel in real-time to show current test
+                selectedIntentId = intent.id;
+                document.querySelectorAll('.intent-row').forEach(row => {
+                    row.classList.toggle('selected', row.dataset.id === intent.id);
+                });
+                renderAnalysis(intent);
             }
 
             hideLoading();
@@ -1755,6 +1861,28 @@
             // Extract AI reason/verdict in human-readable format
             const aiVerdict = extractAIVerdict(analysisData, intent);
 
+            // Build step progress for UI tests
+            let stepProgressHtml = '';
+            if (intent.module === 'ui' && analysisData.steps && Array.isArray(analysisData.steps)) {
+                stepProgressHtml = `
+                    <div class="analysis-section">
+                        <h4><i class="fas fa-list-check"></i> Step Progress</h4>
+                        <div class="step-progress-list">
+                            ${analysisData.steps.map((step, idx) => `
+                                <div class="step-item ${step.status}">
+                                    <span class="step-number">${idx + 1}</span>
+                                    <span class="step-type">[${step.step_type}]</span>
+                                    <span class="step-intent">${escapeHtml(step.intent)}</span>
+                                    <span class="step-status ${step.status}">
+                                        ${step.status === 'passed' ? '<i class="fas fa-check"></i>' : '<i class="fas fa-times"></i>'}
+                                    </span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
             container.innerHTML = `
                 <div class="analysis-section">
                     <h4><i class="fas fa-info-circle"></i> Status</h4>
@@ -1780,6 +1908,8 @@
                         </div>
                     </div>
                 </div>
+                
+                ${stepProgressHtml}
                 
                 <div class="analysis-section">
                     <h4><i class="fas fa-terminal"></i> Intent</h4>
@@ -1852,39 +1982,43 @@
             }
             // For UI module
             else if (intent.module === 'ui') {
-                if (analysisData.error) {
-                    // Extract actual vs expected from error message if available
-                    const errorMsg = analysisData.error;
-
-                    // Check if error contains actual vs expected info
-                    const mismatchMatch = errorMsg.match(/Expected:\s*['"](.+?)['"],\s*Actual:\s*['"](.+?)['"]/i);
-                    if (mismatchMatch) {
-                        reason = `Verification failed - text mismatch`;
-                        details = `Expected: "${mismatchMatch[1]}" | Actual: "${mismatchMatch[2]}"`;
-                    } else {
-                        reason = `Error: ${errorMsg}`;
-                    }
-                } else if (analysisData.steps && Array.isArray(analysisData.steps)) {
-                    const passedSteps = analysisData.steps.filter(s => s.status === 'success' || s.status === 'passed').length;
+                if (analysisData.steps && Array.isArray(analysisData.steps)) {
+                    const passedSteps = analysisData.steps.filter(s => s.status === 'passed').length;
                     const totalSteps = analysisData.steps.length;
 
                     // Find failed step if any
-                    const failedStep = analysisData.steps.find(s => s.status === 'failed' || s.status === 'error');
-                    if (failedStep) {
-                        const stepError = failedStep.error || '';
+                    const failedStep = analysisData.steps.find(s => s.status === 'failed');
 
-                        // Extract actual vs expected from step error
-                        const mismatchMatch = stepError.match(/Expected:\s*['"](.+?)['"],\s*Actual:\s*['"](.+?)['"]/i);
-                        if (mismatchMatch) {
-                            reason = `Step failed: [${failedStep.step_type}] ${failedStep.intent} - Text mismatch`;
-                            details = `Expected: "${mismatchMatch[1]}" | Actual: "${mismatchMatch[2]}"`;
+                    if (failedStep) {
+                        // Build a clear failure message
+                        const stepAction = failedStep.duo_response;
+                        const stepError = failedStep.error || 'Execution failed';
+
+                        // Extract expected text from action if it's a verify action
+                        if (stepAction && stepAction.action_type === 'verify') {
+                            const checks = stepAction.action_json?.checks || [];
+                            const textCheck = checks.find(c => c.type === 'text_visible' || c.text);
+
+                            if (textCheck && textCheck.text) {
+                                reason = `Verification failed at step ${passedSteps + 1}/${totalSteps}`;
+                                details = `Expected text: "${textCheck.text}" was not found on the page`;
+                            } else {
+                                reason = `Step ${passedSteps + 1}/${totalSteps} failed: [${failedStep.step_type}] ${failedStep.intent}`;
+                                details = stepError;
+                            }
                         } else {
-                            reason = `Step failed: [${failedStep.step_type}] ${failedStep.intent}`;
-                            details = stepError || `Failed at step ${totalSteps - passedSteps} of ${totalSteps}`;
+                            reason = `Step ${passedSteps + 1}/${totalSteps} failed: [${failedStep.step_type}] ${failedStep.intent}`;
+                            details = stepError;
                         }
+                    } else if (analysisData.error) {
+                        reason = analysisData.error;
+                        details = `Completed ${passedSteps}/${totalSteps} steps before failure`;
                     } else {
-                        reason = `Executed ${passedSteps}/${totalSteps} steps successfully`;
+                        reason = `All ${totalSteps} steps completed successfully`;
+                        details = '';
                     }
+                } else if (analysisData.error) {
+                    reason = analysisData.error;
                 } else {
                     reason = intent.status === 'passed' ? 'All steps completed successfully' : 'Execution failed';
                 }
@@ -1947,11 +2081,41 @@
                     // Update UI
                     selectModule(currentModule);
                 }
+
+                // Restore swagger content from localStorage (separate from session)
+                const savedSwagger = localStorage.getItem('swaggerContent');
+                const savedSwaggerName = localStorage.getItem('swaggerFileName');
+                if (savedSwagger) {
+                    document.getElementById('swagger-content').value = savedSwagger;
+                    document.getElementById('swagger-file-name').textContent = `✓ ${savedSwaggerName || 'swagger.json'} (cached)`;
+
+                    // Re-apply swagger to backend if API module has base_url configured
+                    if (moduleConfig.api.base_url) {
+                        applySwaggerToBackend(savedSwagger);
+                    }
+                }
             } catch (e) {
                 console.error('Failed to load session:', e);
             }
 
             renderIntents();
+        }
+
+        // Apply swagger content to backend without showing loading
+        async function applySwaggerToBackend(swaggerContent) {
+            try {
+                await fetch('/api/config/api', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: moduleConfig.api.base_url,
+                        swagger_content: swaggerContent
+                    })
+                });
+                console.log('Swagger restored to backend');
+            } catch (error) {
+                console.error('Failed to restore swagger to backend:', error);
+            }
         }
 
         // Loading

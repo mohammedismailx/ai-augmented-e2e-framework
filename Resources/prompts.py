@@ -502,7 +502,7 @@ def get_api_response_analysis_prompt(
     stderr: str = "",
 ) -> str:
     """
-    Generate prompt for GitLab Duo to analyze API response.
+    Generate prompt for analyzing API response.
 
     Args:
         intent (str): Original user intent
@@ -514,41 +514,30 @@ def get_api_response_analysis_prompt(
     Returns:
         str: Formatted prompt for response analysis
     """
-    # Truncate response body if too long to avoid token limits
-    truncated_body = (
-        response_body[:2000] if len(response_body) > 2000 else response_body
-    )
+    return f"""Analyze this API response and determine if the intent was fulfilled.
 
-    return f"""Analyze this API response and determine if the INTENT was completely fulfilled.
+**User Intent:** {intent}
 
-Intent: {intent}
-Command: {curl_command}
-Status: {status_code}
-Response: {truncated_body}
-Error: {stderr if stderr else "None"}
+**Curl Command:** {curl_command}
 
-**CRITICAL RULES FOR VERIFICATION/VALIDATION INTENTS:**
-- If intent contains "verify", "check", "confirm", "ensure", "validate", "make sure":
-  - You MUST check if the response data matches the expected values in the intent
-  - Example: "verify title is Activity 10" → Check if response has "title": "Activity 10"
-  - If data exists but doesn't match expected value = FAILURE
-  - If data matches expected value = SUCCESS
+**HTTP Status Code:** {status_code}
 
-**GENERAL RULES:**
-- Status 2xx with data that fulfills ALL parts of the intent = SUCCESS
-- Status 4xx/5xx or curl error = FAILURE
-- Status 2xx but data doesn't match intent expectations = FAILURE
+**Response Body:** {response_body}
 
-**OUTPUT FORMAT:**
-Return ONLY a JSON object with your specific analysis.
+**Error (if any):** {stderr if stderr else "None"}
 
-Example SUCCESS:
-{{"success": true, "reason": "Activity 5 retrieved with title 'Activity 5' matching expected value"}}
+**Your Task:**
+1. Check if the API request was successful (2xx status)
+2. Check if the response data fulfills the user's intent
+3. For verification intents ("verify", "check", "confirm"), validate the actual data matches expectations
 
-Example FAILURE:
-{{"success": false, "reason": "Response has title 'Activity 5' but intent expected 'Activity 10'"}}
+**Rules:**
+- Status 2xx with data matching the intent = success: true
+- Status 4xx/5xx or error = success: false
+- Status 2xx but data doesn't match intent = success: false
 
-Your JSON analysis:"""
+**Response Format (JSON only):**
+{{"success": true/false, "reason": "Your analysis of the response"}}"""
 
 
 def get_curl_retry_prompt(
@@ -1833,7 +1822,7 @@ def get_ui_step_failure_analysis_prompt(
     previous_steps: list = None,
 ) -> str:
     """
-    Generate prompt for GitLab Duo to analyze why a step failed.
+    Generate prompt for analyzing why a UI step failed.
 
     Args:
         step_intent: The step text that failed
@@ -1846,88 +1835,56 @@ def get_ui_step_failure_analysis_prompt(
         previous_steps: List of previously executed steps
     """
 
-    elements_str = "\n".join(
-        [f"  {i+1}. {elem[:400]}" for i, elem in enumerate(relevant_elements[:15])]
+    elements_str = (
+        "\n".join([f"  - {elem[:300]}" for elem in relevant_elements[:10]])
+        if relevant_elements
+        else "No elements found"
     )
 
-    previous_context = ""
+    prev_context = ""
     if previous_steps:
-        prev_str = "\n".join(
+        prev_context = "\n".join(
             [
                 f"  - [{s.get('step_type', '')}] {s.get('intent', '')}: {s.get('status', 'pending')}"
-                for s in previous_steps
-            ]
+                for s in previous_steps[-5:]
+            ]  # Last 5 steps only
         )
-        previous_context = f"\n## All Previous Steps\n{prev_str}\n"
 
-    return f"""
-        Your expertise: QA failure analysis, debugging, and root cause identification.
+    return f"""Analyze why this UI test step failed and provide insights.
 
-        📋 **MISSION**: Analyze why this UI test step failed and provide a detailed explanation.
+**Failed Step:**
+- Type: {step_type}
+- Intent: {step_intent}
 
-        📥 **FAILURE CONTEXT**
-        ═══════════════════════════════════════════════════════════════════════════════════════
+**Action Attempted:** {failed_action}
 
-        🔴 FAILED STEP:
-        Type: {step_type}
-        Intent: {step_intent}
+**Error:** {error}
 
-        🎯 ACTION ATTEMPTED:
-        {failed_action}
+**Page State:**
+- URL: {page_url}
+- Title: {page_title}
 
-        ❌ ERROR MESSAGE:
-        {error}
-        {previous_context}
-        🌐 CURRENT PAGE STATE:
-        URL: {page_url}
-        Title: {page_title}
+**Available Elements on Page:**
+{elements_str}
 
-        📄 PAGE ELEMENTS (relevant to the intent):
-        {elements_str}
+**Previous Steps:**
+{prev_context if prev_context else "None"}
 
-        ═══════════════════════════════════════════════════════════════════════════════════════
+**Your Task:**
+Analyze the failure and determine:
+1. Why did it fail? (element not found, wrong state, timing issue, etc.)
+2. What was expected vs what was found?
+3. Is this a test issue or application issue?
 
-        ⚡ **ANALYSIS REQUIRED** ⚡
-        ═══════════════════════════════════════════════════════════════════════════════════════
-
-        Please analyze and provide:
-
-        1️⃣ **ROOT CAUSE**: What is the most likely reason for the failure?
-           - Element not found on page?
-           - Element found but not matching expected state?
-           - Wrong locator generated?
-           - Page not in expected state?
-           - Timing/loading issue?
-           - Test data mismatch?
-
-        2️⃣ **EVIDENCE**: What evidence from the page elements supports your analysis?
-           - Compare expected vs actual elements on page
-           - Note any discrepancies
-
-        3️⃣ **EXPECTED VS ACTUAL**:
-           - What did the test expect to find/verify?
-           - What is actually on the page?
-
-        4️⃣ **RECOMMENDATION**: How could this be fixed?
-           - Is this a test bug or application bug?
-           - Suggested fix
-
-        🚨 **OUTPUT FORMAT** 🚨
-        ═══════════════════════════════════════════════════════════════════════════════════════
-
-        Return a JSON object with the following structure:
-        {{
-            "root_cause": "Brief description of why it failed",
-            "failure_type": "element_not_found|wrong_state|data_mismatch|timing|test_bug|app_bug",
-            "expected": "What the test expected",
-            "actual": "What was actually found on the page",
-            "evidence": ["Evidence point 1", "Evidence point 2"],
-            "recommendation": "How to fix this issue",
-            "is_test_issue": true/false
-        }}
-
-        ═══════════════════════════════════════════════════════════════════════════════════════
-        """
+**Response Format (JSON only):**
+{{
+    "root_cause": "Brief description of why it failed",
+    "failure_type": "element_not_found|wrong_state|data_mismatch|timing|test_bug|app_bug",
+    "expected": "What the test expected",
+    "actual": "What was found on the page",
+    "recommendation": "How to fix this",
+    "is_test_issue": true/false
+}}"""
 
 
 # =============================================================================

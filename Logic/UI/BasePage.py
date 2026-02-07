@@ -872,14 +872,20 @@ class BasePage:
 
         try:
             if action_type == "navigate":
-                page_ref = action.get("page_ref", "")
-                url = self._resolve_url(page_ref)
+                # Check for direct URL first, then page_ref
+                url = action.get("url", "")
+                if not url:
+                    page_ref = action.get("page_ref", "")
+                    url = self._resolve_url(page_ref)
+
                 if url:
                     self.page.goto(url)
                     logger.log(f"[EXECUTE] Navigated to {url}")
                     return True
                 else:
-                    logger.log(f"[EXECUTE] Could not resolve URL for {page_ref}")
+                    logger.log(
+                        f"[EXECUTE] Could not resolve URL - no url or page_ref provided"
+                    )
                     return False
 
             elif action_type == "click":

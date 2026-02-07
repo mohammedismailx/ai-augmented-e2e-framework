@@ -176,19 +176,19 @@ def reset_ui_page():
     """Reset UI page for a fresh state between tests.
     Creates a new page/context but keeps the browser open.
     """
+    # Close old context if exists
+    if _instances["ui_page_context"]:
+        try:
+            _instances["ui_page_context"].close()
+        except:
+            pass
+        _instances["ui_page_context"] = None
+
+    _instances["ui_page"] = None
+
+    # If browser exists, create a new context and page
     if _instances["browser"] is not None:
         try:
-            # Close old context if exists
-            if _instances["ui_page_context"]:
-                try:
-                    _instances["ui_page_context"].close()
-                except:
-                    pass
-                _instances["ui_page_context"] = None
-
-            _instances["ui_page"] = None
-
-            # Create new context and page
             from Logic.UI.BasePage import BasePage
 
             browser = _instances["browser"]
@@ -200,7 +200,7 @@ def reset_ui_page():
             print("[RESET] UI Page reset for new test")
         except Exception as e:
             print(f"[WARNING] Failed to reset UI page: {e}")
-            # Force full re-initialization
+            # Force full re-initialization on next get_ui_page()
             _instances["ui_page"] = None
             _instances["ui_page_context"] = None
             _instances["browser"] = None
@@ -467,16 +467,15 @@ def execute_intent(intent_test: IntentTest) -> IntentTest:
             )
 
         elif intent_test.module == "ui":
+            # Always reset UI page for a fresh state before each test
+            reset_ui_page()
             ui_page = get_ui_page()
             ui_context = get_ui_context()
             result = ui_page.execute_by_intent(
                 intent=intent_test.intent, rag_context=ui_context, assert_success=False
             )
-            # Navigate to blank page to clean state for next test (but keep browser open)
-            try:
-                ui_page.page.goto("about:blank")
-            except:
-                pass  # If page is closed, it will be recreated on next get_ui_page()
+            # Reset page after test to clean state (closes old context, creates new one)
+            reset_ui_page()
         else:
             result = {
                 "success": False,

@@ -1,3 +1,7 @@
+# ============================================================
+# AI-Augmented E2E Framework - Dependencies
+# ============================================================
+
 # Core Testing Framework
 pytest==7.4.3
 pytest-playwright==0.4.3
@@ -6,15 +10,14 @@ playwright==1.40.0
 # Web Scraping & HTML Parsing
 lxml==4.9.3
 beautifulsoup4==4.12.2
+
 # HTTP Requests
 requests==2.31.0
 
 # Configuration & Data
 PyYAML==6.0.1
 
-# AI/ML Libraries (for IntentLocatorLibrary and IntentQueriesLibrary)
-sentence-transformers==2.2.2
-torch==2.1.0
+# IntentLocatorLibrary dependencies (TF-IDF based element matching)
 numpy==1.24.3
 scikit-learn==1.3.2
 scipy>=1.9.0
@@ -22,10 +25,28 @@ scipy>=1.9.0
 # Utilities
 python-dotenv==1.0.0
 
-# Database
+# ============================================================
+# Database Connectivity
+# ============================================================
 mysql-connector-python==8.2.0
 
-
-
-ollama
+# ============================================================
+# RAG (Retrieval-Augmented Generation) Components
+# ============================================================
+# Vector Database for embeddings storage
 chromadb==0.5.23
+
+# Local LLM and Embedding Model Interface
+ollama
+
+# ============================================================
+# GitLab Duo API Communication
+# ============================================================
+# Already covered by requests
+
+# ============================================================
+# Optional: Development & Debugging
+# ============================================================
+# ipython  # Interactive debugging
+# black    # Code formatting
+# flake8   # Linting

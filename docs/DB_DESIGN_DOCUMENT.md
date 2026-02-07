@@ -5,8 +5,8 @@
 | Field              | Value                                                |
 | ------------------ | ---------------------------------------------------- |
 | **Document Title** | AI-Augmented E2E Framework - Database Testing Module |
-| **Version**        | 1.0.0                                                |
-| **Last Updated**   | February 6, 2026                                     |
+| **Version**        | 2.0.0                                                |
+| **Last Updated**   | February 7, 2026                                     |
 | **Author**         | Framework Team                                       |
 | **Status**         | Production Ready                                     |
 
@@ -61,9 +61,12 @@ AI-Augmented:       Intent: "get agent with id 5"
 | --------------------------------- | ----------------------------------------------------------- |
 | **Intent-Based Execution**        | Execute database queries using natural language             |
 | **RAG-Powered Schema Context**    | Automatic schema retrieval with FK relationship grouping    |
+| **TF-IDF Table Extraction**       | Extract table name from intent using TF-IDF + keyword match |
 | **AI SQL Generation**             | GitLab Duo generates executable SQL queries                 |
 | **AI Result Analysis**            | Intelligent success/failure determination                   |
+| **Verification Intent Handling**  | Empty result = FAILURE for verify/check/confirm intents     |
 | **Learning System**               | Stores correct/incorrect queries for continuous improvement |
+| **Built-in Assertions**           | `assert_success` parameter auto-raises `AssertionError`     |
 | **Auto-Retry with Error Context** | Failed queries are retried with error analysis              |
 | **Comprehensive Logging**         | Beautiful step-by-step logging with full traceability       |
 
@@ -334,21 +337,21 @@ class DBConnector:
     Methods:
         connect(): Establish database connection
         execute_query(query): Execute raw SQL query
-        execute_by_intent(intent): Execute query based on natural language
+        execute_by_intent(intent, max_retries, log_intent, assert_success): Execute query based on natural language
         close(): Close database connection
     """
 ```
 
 **Key Methods:**
 
-| Method                                   | Description                                    |
-| ---------------------------------------- | ---------------------------------------------- |
-| `execute_by_intent(intent, max_retries)` | Main orchestrator - generates and executes SQL |
-| `_clean_sql_query(query)`                | Removes markdown/code blocks from AI response  |
-| `_extract_tables_from_query(query)`      | Extracts table names for learning storage      |
-| `get_table_schema(table_name)`           | Gets column definitions via DESCRIBE           |
-| `get_all_tables()`                       | Gets all table names via SHOW TABLES           |
-| `get_foreign_keys(table_name)`           | Gets FK relationships from INFORMATION_SCHEMA  |
+| Method                                                               | Description                                    |
+| -------------------------------------------------------------------- | ---------------------------------------------- |
+| `execute_by_intent(intent, max_retries, log_intent, assert_success)` | Main orchestrator - generates and executes SQL |
+| `_clean_sql_query(query)`                                            | Removes markdown/code blocks from AI response  |
+| `_extract_tables_from_query(query)`                                  | Extracts table names for learning storage      |
+| `get_table_schema(table_name)`                                       | Gets column definitions via DESCRIBE           |
+| `get_all_tables()`                                                   | Gets all table names via SHOW TABLES           |
+| `get_foreign_keys(table_name)`                                       | Gets FK relationships from INFORMATION_SCHEMA  |
 
 ### 5.2 RAG Class - DB Methods
 
@@ -358,13 +361,15 @@ class DBConnector:
 
 **DB-Specific Methods:**
 
-| Method                                     | Description                                    |
-| ------------------------------------------ | ---------------------------------------------- |
-| `embed_db_schema(schema_data, ...)`        | Embeds table schemas with FK relationships     |
-| `retrieve_db_context_by_intent(intent)`    | Retrieves schema + learning examples by intent |
-| `store_query_learning(intent, query, ...)` | Stores query as correct/incorrect for learning |
-| `_group_tables_by_fk(schema_data, rels)`   | Groups related tables by foreign keys          |
-| `_format_table_group_for_embedding(...)`   | Formats table group as embeddable document     |
+| Method                                             | Description                                    |
+| -------------------------------------------------- | ---------------------------------------------- |
+| `embed_db_schema(schema_data, ...)`                | Embeds table schemas with FK relationships     |
+| `retrieve_db_context_by_intent(intent)`            | Retrieves schema + learning examples by intent |
+| `_rag_extract_table_from_schema_by_intent(intent)` | TF-IDF + keyword hybrid table extraction       |
+| `_rag_extract_table_from_intent_keywords(intent)`  | Keyword-based table name matching              |
+| `store_query_learning(intent, query, ...)`         | Stores query as correct/incorrect for learning |
+| `_group_tables_by_fk(schema_data, rels)`           | Groups related tables by foreign keys          |
+| `_format_table_group_for_embedding(...)`           | Formats table group as embeddable document     |
 
 ### 5.3 AIAgent Class - DB Methods
 
@@ -384,7 +389,7 @@ class DBConnector:
 
 ## 6. API Reference
 
-### 6.1 execute_by_intent()
+### 6.1 execute_by_intent() - Multi-Layer Document Flow
 
 **Signature:**
 ```python
@@ -392,17 +397,30 @@ def execute_by_intent(
     self,
     intent: str,
     max_retries: int = 2,
-    log_intent: bool = True
+    log_intent: bool = True,
+    assert_success: bool = True  # NEW: Built-in assertions
 ) -> dict
+```
+
+**Multi-Layer Document Flow:**
+```
+1. TF-IDF: Search schema doc by intent → extract table name
+2. RAG: Retrieve stored action from db_learning collection (by table)
+3. DUO: Send BOTH schema_context AND stored_metadata to generate query
+4. EXECUTE: Run the generated SQL query
+5. ANALYZE: AI analyzes the result
+6. STORE: Store action with [correct]/[incorrect] status
+7. ASSERT: Optionally raise AssertionError if AI analysis fails
 ```
 
 **Parameters:**
 
-| Parameter     | Type | Default | Description                               |
-| ------------- | ---- | ------- | ----------------------------------------- |
-| `intent`      | str  | -       | Natural language description of the query |
-| `max_retries` | int  | 2       | Maximum retry attempts on failure         |
-| `log_intent`  | bool | True    | Whether to log detailed execution steps   |
+| Parameter        | Type | Default | Description                                           |
+| ---------------- | ---- | ------- | ----------------------------------------------------- |
+| `intent`         | str  | -       | Natural language description of the query             |
+| `max_retries`    | int  | 2       | Maximum retry attempts on failure                     |
+| `log_intent`     | bool | True    | Whether to log detailed execution steps               |
+| `assert_success` | bool | True    | If True, raises AssertionError when AI analysis fails |
 
 **Returns:**
 ```python
@@ -413,6 +431,68 @@ def execute_by_intent(
     "query": str,             # Generated SQL query
     "error": str or None      # Error message if failed
 }
+```
+
+**Raises:**
+- `AssertionError`: If `assert_success=True` and AI analysis indicates failure
+
+### 6.2 TF-IDF Table Extraction
+
+The system uses a **hybrid approach** to extract the table name from the intent:
+
+```python
+# Step 1: Keyword extraction (prioritized)
+# Looks for patterns like "verify that agents table", "from the agents table"
+table = rag._extract_table_from_intent_keywords(intent)
+
+# Step 2: ChromaDB semantic search (fallback)
+if not table:
+    results = rag.db_context_collection.query(query_texts=[intent], n_results=1)
+    table = results["metadatas"][0][0].get("table_name")
+```
+
+**Keyword Patterns Matched:**
+- `"from the {table} table"` / `"in the {table} table"`
+- `"verify that {table} table"` / `"check the {table} table"`
+- `"the {table} contains"` / `"{table} has"`
+- Direct table name match against schema collection
+
+### 6.3 Verification Intent Handling
+
+The AI analysis prompt now correctly handles **verification intents**:
+
+```python
+# Intent: "verify that Reumaysa email domain is yahoo"
+# Query: SELECT email FROM agents WHERE name = 'Reumaysa' AND email LIKE '%@yahoo%'
+# Result: [] (empty)
+
+# AI Analysis Rules:
+# - Intent contains "verify" → empty result = FAILURE
+# - "Reumaysa's email does NOT have yahoo domain"
+
+# CRITICAL RULES in prompt:
+# - If intent contains "verify", "check", "confirm", "ensure", "validate":
+#   - Empty result [] = FAILURE (verification failed)
+#   - Non-empty result with matching data = SUCCESS
+```
+
+### 6.4 Built-in Assertions (`assert_success` Parameter)
+
+```python
+# Normal test - auto-raises AssertionError on failure
+def test_verify_agent_exists(self, db_context):
+    db_context.execute_by_intent(
+        intent="verify that John is one of the agents"
+    )  # Automatically fails if no agent named John
+
+# Negative test - no assertion, returns result for inspection
+def test_verify_nonexistent_agent(self, db_context):
+    result = db_context.execute_by_intent(
+        intent="verify that NonExistent is one of the agents",
+        assert_success=False
+    )
+    assert result["success"] == False  # Manual assertion for negative test
+    assert "not found" in result["reason"].lower()
 ```
 
 **Example:**

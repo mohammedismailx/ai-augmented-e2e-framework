@@ -5,8 +5,8 @@
 | Field              | Value                                                  |
 | ------------------ | ------------------------------------------------------ |
 | **Document Title** | AI-Augmented E2E Framework - API Testing Module Design |
-| **Version**        | 1.0.0                                                  |
-| **Last Updated**   | February 6, 2026                                       |
+| **Version**        | 2.0.0                                                  |
+| **Last Updated**   | February 7, 2026                                       |
 | **Author**         | Framework Team                                         |
 | **Status**         | Production Ready                                       |
 
@@ -55,14 +55,17 @@ AI-Augmented:       Intent: "get book with id 1"
 
 ### 1.3 Key Features
 
-| Feature                           | Description                                                 |
-| --------------------------------- | ----------------------------------------------------------- |
-| **Intent-Based Execution**        | Execute API calls using natural language descriptions       |
-| **RAG-Powered Context**           | Automatic API documentation retrieval from embedded Swagger |
-| **AI Curl Generation**            | GitLab Duo generates executable curl commands               |
-| **AI Response Analysis**          | Intelligent success/failure determination                   |
-| **Auto-Retry with Error Context** | Failed requests are retried with error analysis             |
-| **Comprehensive Logging**         | Dual logging to console and file with full traceability     |
+| Feature                           | Description                                                         |
+| --------------------------------- | ------------------------------------------------------------------- |
+| **Intent-Based Execution**        | Execute API calls using natural language descriptions               |
+| **RAG-Powered Context**           | Automatic API documentation retrieval from embedded Swagger         |
+| **TF-IDF Endpoint Extraction**    | Extract resource/method/endpoint from intent using TF-IDF matching  |
+| **Endpoint-Based Learning**       | Store learned actions by endpoint pattern (not intent)              |
+| **AI Curl Generation**            | GitLab Duo generates executable curl commands                       |
+| **AI Response Analysis**          | Intelligent success/failure determination with verification support |
+| **Auto-Retry with Error Context** | Failed requests are retried with AI error analysis                  |
+| **Built-in Assertions**           | `assert_success` parameter auto-raises `AssertionError` on failure  |
+| **Comprehensive Logging**         | Dual logging to console and file with full traceability             |
 
 ---
 
@@ -353,39 +356,54 @@ class APIWrapper:
 
 #### 5.1.2 Core Methods
 
-| Method                     | Parameters                                    | Returns | Description                         |
-| -------------------------- | --------------------------------------------- | ------- | ----------------------------------- |
-| `__init__`                 | `base_url=None`                               | `None`  | Initialize wrapper with AI agent    |
-| `execute_by_intent`        | `intent, base_url, rag_instance, max_retries` | `dict`  | Execute API call based on intent    |
-| `_clean_curl_command`      | `curl_command`                                | `str`   | Clean markdown/formatting from curl |
-| `_execute_curl`            | `curl_command`                                | `dict`  | Execute curl via subprocess         |
-| `_parse_analysis_json`     | `analysis`                                    | `dict`  | Parse JSON from AI analysis         |
-| `_print_execution_summary` | `result, logger`                              | `None`  | Print formatted summary             |
+| Method                     | Parameters                                                    | Returns | Description                         |
+| -------------------------- | ------------------------------------------------------------- | ------- | ----------------------------------- |
+| `__init__`                 | `base_url=None`                                               | `None`  | Initialize wrapper with AI agent    |
+| `execute_by_intent`        | `intent, base_url, rag_instance, max_retries, assert_success` | `dict`  | Execute API call based on intent    |
+| `_clean_curl_command`      | `curl_command`                                                | `str`   | Clean markdown/formatting from curl |
+| `_execute_curl`            | `curl_command`                                                | `dict`  | Execute curl via subprocess         |
+| `_parse_analysis_json`     | `analysis`                                                    | `dict`  | Parse JSON from AI analysis         |
+| `_print_execution_summary` | `result, logger`                                              | `None`  | Print formatted summary             |
 
-#### 5.1.3 execute_by_intent Method
+#### 5.1.3 execute_by_intent Method (Multi-Layer Document Flow)
 
 ```python
 def execute_by_intent(
     self,
     intent: str,
-    base_url: str,
+    base_url: str = None,
     rag_instance=None,
-    max_retries: int = 2
+    max_retries: int = 2,
+    assert_success: bool = True  # NEW: Built-in assertions
 ) -> dict:
     """
-    Execute an API call based on natural language intent.
+    Execute an API call based on natural language intent using ChromaDB Learning + RAG + GitLab Duo.
+    
+    MULTI-LAYER DOCUMENT FLOW:
+    ==========================
+    1. EXTRACT RESOURCE: TF-IDF search on "api_swagger" to extract resource from intent
+    2. RETRIEVE FROM LEARNING: Search "api_endpoint_learning" for stored [correct] action
+    3. RETRIEVE FROM SWAGGER: Get swagger context (always, for validation)
+    4. AUGMENT PROMPT: Include BOTH stored_metadata AND swagger_context
+    5. DUO: Generate action metadata (action_key, method, endpoint, curl, etc.)
+    6. EXECUTE: Execute the generated curl command
+    7. STORE: Store result with [correct] (status != 404) or [incorrect] status
+    8. ASSERT: Optionally raise AssertionError if AI analysis fails
     
     Args:
         intent: Natural language intent (e.g., "delete book with id 5")
-        base_url: Base URL for the API
+        base_url: Base URL for the API. Uses instance base_url if not provided.
         rag_instance: RAG instance with embedded swagger
         max_retries: Maximum retry attempts for failed requests
+        assert_success (bool): If True, raises AssertionError when AI analysis returns failure.
+                               Set to False for negative testing scenarios.
     
     Returns:
         dict: {
             "success": bool,          # AI-determined success
             "reason": str,            # AI explanation
             "intent": str,            # Original intent
+            "resource": str,          # Extracted resource (e.g., "books")
             "base_url": str,          # Base URL used
             "curl_command": str,      # Generated curl command
             "status_code": int,       # HTTP status code
@@ -394,10 +412,97 @@ def execute_by_intent(
             "analysis_result": dict,  # Parsed {success, reason}
             "error": str,             # Error message if any
             "retries": int,           # Number of retries used
+            "learning_source": str,   # "stored" or "swagger"
+            "action_metadata": dict,  # DUO-generated action metadata
             "prompts": dict,          # Prompts sent to AI
             "responses": dict         # AI responses
         }
+    
+    Raises:
+        AssertionError: If assert_success=True and AI analysis indicates failure
     """
+```
+
+#### 5.1.4 Endpoint-Based Learning (Key Architecture Change)
+
+**Important:** The API learning system stores actions by **endpoint pattern** (e.g., `GET /api/v1/Books/{id}`), NOT by intent. This ensures:
+- Same endpoint reuses the same learned action regardless of how the intent is phrased
+- Higher cache hit rate for repeated API calls
+- Consistent behavior across different intent phrasings
+
+```python
+# ChromaDB Document ID Pattern
+doc_id = f"{method.upper()}_{endpoint_pattern}"  # e.g., "GET_/api/v1/Books/{id}"
+
+# Storage Example
+rag_instance.store_api_action_from_duo(
+    resource="books",
+    duo_response=action_metadata,
+    execution_result={"status_code": 200, "response_body": "..."},
+    status="[correct]",  # or "[incorrect]"
+    base_url=base_url,
+    method="GET",
+    endpoint_pattern="/api/v1/Books/{id}"
+)
+```
+
+#### 5.1.5 TF-IDF Resource Extraction
+
+Before querying the learning database, the system extracts the API resource from the intent using TF-IDF matching against the embedded Swagger spec:
+
+```python
+# Step 1: Extract resource from intent
+swagger_match = rag_instance.extract_resource_from_swagger_by_intent(intent)
+# Returns: {
+#     "resource": "books",
+#     "method": "GET",
+#     "endpoint_pattern": "/api/v1/Books/{id}",
+#     "swagger_context": "..."
+# }
+
+# Step 2: Retrieve learned action by endpoint pattern
+stored_action = rag_instance.retrieve_api_action_for_endpoint(
+    resource="books",
+    method="GET",
+    endpoint_pattern="/api/v1/Books/{id}"
+)
+```
+
+#### 5.1.6 Built-in Assertions (`assert_success` Parameter)
+
+```python
+# Normal test - auto-raises AssertionError on failure
+def test_get_book(self, api_wrapper):
+    api_wrapper.execute_by_intent(intent="get book with id 1")
+    # Automatically fails test if AI analysis returns success=False
+
+# Negative test - no assertion, returns result for inspection
+def test_get_nonexistent_book(self, api_wrapper):
+    result = api_wrapper.execute_by_intent(
+        intent="get book with id 99999",
+        assert_success=False
+    )
+    assert result["status_code"] == 404  # Manual assertion
+
+# Verification test with data validation
+def test_verify_book_title(self, api_wrapper):
+    api_wrapper.execute_by_intent(
+        intent="Get book with id 1 and verify that its title is 'Hello World'"
+    )
+    # AI analyzes response and verifies title matches expected value
+```
+
+#### 5.1.7 Verification Intent Handling
+
+The AI analysis prompt now handles **verification intents** that check specific data values:
+
+```python
+# Intent with verification
+intent = "Get Activity with ID 5 and verify that its title is Activity 10"
+
+# AI Analysis Rules:
+# - If response has title "Activity 5" but intent expected "Activity 10" → FAILURE
+# - If response has title "Activity 10" matching expected value → SUCCESS
 ```
 
 #### 5.1.4 Curl Execution Process

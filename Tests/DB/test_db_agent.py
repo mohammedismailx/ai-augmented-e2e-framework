@@ -7,7 +7,7 @@ class TestDBIntentExecution:
     @pytest.mark.title("Verify Agents Table Schema")
     def test_get_all_agents(self, db_context):
         db_context.execute_by_intent(
-            intent="verify that Rowen is one of the agents at Emirates"
+            intent="verify that ther is an agent like name Rowen and that his address like emirates"
         )
 
     @pytest.mark.db_intent

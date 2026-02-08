@@ -1,4 +1,4 @@
-# 🤖 AI-Augmented E2E Testing Framework
+# 🤖 NLA Automation Framework
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
@@ -34,7 +34,7 @@
 
 ## 🎯 Overview
 
-The **AI-Augmented E2E Testing Framework** revolutionizes traditional test automation by replacing explicit selectors and queries with **natural language intents**. The framework intelligently interprets what you want to test and generates the appropriate actions automatically.
+The **NLA Automation Framework** revolutionizes traditional test automation by replacing explicit selectors and queries with **natural language intents**. The framework intelligently interprets what you want to test and generates the appropriate actions automatically.
 
 ### Traditional vs AI-Augmented Approach
 
@@ -111,7 +111,7 @@ The **AI-Augmented E2E Testing Framework** revolutionizes traditional test autom
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                        AI-AUGMENTED E2E TESTING FRAMEWORK                            │
+│                        NLA Automation Framework                            │
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                      │
 │   ┌─────────────────────────────────────────────────────────────────────────────┐   │
